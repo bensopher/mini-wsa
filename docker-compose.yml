@@ -1,0 +1,27 @@
+services:
+  db:
+    image: timescale/timescaledb:2.32.0-pg17
+    environment:
+      # Dev-only credentials (see README); real deployments inject them from a secrets manager.
+      POSTGRES_DB: miniwsa
+      POSTGRES_USER: miniwsa
+      POSTGRES_PASSWORD: miniwsa
+      TIMESCALEDB_TELEMETRY: "off"
+    ports: ["${DB_PORT:-5432}:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U miniwsa -d miniwsa"]
+      interval: 5s
+      retries: 20
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8.10.3-alpine
+    ports: ["${REDIS_PORT:-6379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+volumes:
+  db-data: {}
