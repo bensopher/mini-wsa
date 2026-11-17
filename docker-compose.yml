@@ -23,5 +23,17 @@ services:
       interval: 5s
       retries: 20
 
+  app:
+    build: { context: ., target: app }
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # Dev-only keys, documented in the README.
+      MINIWSA_INGEST_KEY: dev-ingest-key
+      MINIWSA_READ_KEY: dev-read-key
+      MINIWSA_ADMIN_KEY: dev-admin-key
+    ports: ["${APP_PORT:-8080}:8080"]
+    depends_on:
+      db: { condition: service_healthy }
+
 volumes:
   db-data: {}
