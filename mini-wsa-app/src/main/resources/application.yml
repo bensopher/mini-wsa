@@ -13,13 +13,21 @@ spring:
       # instead of an ever-growing queue.
       maximum-pool-size: 10
       connection-timeout: 2000
+  data.redis:
+    host: localhost
+    port: ${REDIS_PORT:6379}
+    # Lettuce's default command timeout is 60s. Redis is optional for ingestion (fail-open), so an outage
+    # must cost at most half a second per request, not a minute.
+    timeout: 500ms
+    connect-timeout: 500ms
 miniwsa:
   ingest:
     max-batch-size: 1000
     max-future-skew: 5m      # A3
   scoring:
     sensitive-path: { patterns: [/admin, /login], bonus: 15 }   # A7
-    repeat-offender: { threshold: 5, bonus: 15 }                # A6
+    # A5/A6: window in event time. Retention = window + allowed lateness; idle IP keys expire after key-ttl.
+    repeat-offender: { threshold: 5, bonus: 15, window: 10m, retention: 1h, key-ttl: 2h }
   security:
     # Dev defaults only (documented in the README); real deployments inject keys from a secrets manager via env.
     api-keys:

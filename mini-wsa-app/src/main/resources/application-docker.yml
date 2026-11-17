@@ -1,6 +1,7 @@
 spring:
   datasource:
     url: jdbc:postgresql://db:5432/miniwsa
+  data.redis.host: redis
 logging:
   # One JSON object per line (ECS), ready for a log shipper.
   structured.format.console: ecs

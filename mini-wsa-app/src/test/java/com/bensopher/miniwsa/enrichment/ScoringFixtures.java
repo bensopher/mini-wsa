@@ -6,6 +6,7 @@ import com.bensopher.miniwsa.event.Rule;
 import com.bensopher.miniwsa.event.SecurityEvent;
 import com.bensopher.miniwsa.event.Severity;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
@@ -14,7 +15,7 @@ final class ScoringFixtures {
 
     static final ScoringProperties DEFAULT_PROPERTIES = new ScoringProperties(
             new ScoringProperties.SensitivePath(List.of("/admin", "/login"), 15),
-            new ScoringProperties.RepeatOffender(5, 15));
+            new ScoringProperties.RepeatOffender(5, 15, Duration.ofMinutes(10), Duration.ofHours(1), Duration.ofHours(2)));
 
     private ScoringFixtures() {
     }

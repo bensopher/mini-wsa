@@ -9,17 +9,21 @@ import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureRestTe
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.redis.core.RedisCallback;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.client.RestTestClient;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.Instant;
 
 /**
- * Base class for integration tests: the full application on a random port, talking to a real
- * TimescaleDB. The container is a singleton started once per JVM (not {@code @Container}, which
- * would stop it after each test class). Every test starts from empty tables and with the clock at {@link #NOW}.
+ * Base class for integration tests: the full application on a random port, talking to a real TimescaleDB
+ * and Redis. The containers are singletons started once per JVM (not {@code @Container}, which would stop
+ * them after each test class). Every test starts with empty tables, an empty Redis and the clock at {@link #NOW}.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureRestTestClient
@@ -36,8 +40,12 @@ public abstract class AbstractIntegrationTest {
             DockerImageName.parse("timescale/timescaledb:2.32.0-pg17").asCompatibleSubstituteFor("postgres"))
             .withEnv("TIMESCALEDB_TELEMETRY", "off");
 
+    @ServiceConnection(name = "redis")
+    static final GenericContainer<?> REDIS = new GenericContainer<>(DockerImageName.parse("redis:8.10.3-alpine"))
+            .withExposedPorts(6379);
+
     static {
-        TIMESCALE.start();
+        Startables.deepStart(TIMESCALE, REDIS).join();
     }
 
     /** A client for this test's server that logs every exchange; see {@link ExchangeLoggingInterceptor}. */
@@ -50,6 +58,9 @@ public abstract class AbstractIntegrationTest {
     protected MutableClock clock;
 
     @Autowired
+    protected StringRedisTemplate redis;
+
+    @Autowired
     void setClient(RestTestClient serverClient) {
         this.client = serverClient.mutate().requestInterceptor(new ExchangeLoggingInterceptor()).build();
     }
@@ -59,6 +70,10 @@ public abstract class AbstractIntegrationTest {
         // Marks where each test starts in the output, so the exchanges logged below it can be attributed.
         log.info("=== {}.{}", getClass().getSimpleName(), test.getTestMethod().map(m -> m.getName()).orElse("?"));
         jdbc.execute("TRUNCATE security_events");
+        redis.execute((RedisCallback<Void>) connection -> {
+            connection.serverCommands().flushDb();
+            return null;
+        });
         clock.set(NOW);
     }
 
