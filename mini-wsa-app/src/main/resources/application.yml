@@ -3,3 +3,13 @@ spring:
   # The workload is I/O-bound (Postgres, Redis): every request runs on a cheap virtual thread,
   # and concurrency is bounded at the resources (connection pools) instead.
   threads.virtual.enabled: true
+  datasource:
+    url: jdbc:postgresql://localhost:${DB_PORT:5432}/miniwsa
+    username: miniwsa
+    password: ${MINIWSA_DB_PASSWORD:miniwsa}   # dev default only
+    hikari:
+      # Virtual threads make waiting cheap but don't make the database faster: this pool is the real
+      # throttle on concurrent DB work. Waiters give up after 2s so overload turns into fast 503s
+      # instead of an ever-growing queue.
+      maximum-pool-size: 10
+      connection-timeout: 2000
