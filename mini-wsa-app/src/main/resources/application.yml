@@ -14,6 +14,9 @@ spring:
       maximum-pool-size: 10
       connection-timeout: 2000
 miniwsa:
+  ingest:
+    max-batch-size: 1000
+    max-future-skew: 5m      # A3
   security:
     # Dev defaults only (documented in the README); real deployments inject keys from a secrets manager via env.
     api-keys:

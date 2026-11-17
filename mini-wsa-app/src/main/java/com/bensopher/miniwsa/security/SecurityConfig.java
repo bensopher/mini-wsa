@@ -5,6 +5,7 @@ import jakarta.servlet.DispatcherType;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
@@ -38,6 +39,7 @@ public class SecurityConfig {
                         // container-level 400/404/413 would be masked as a 401/403.
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/v1/events/ingest").hasRole(Role.INGEST.name())
                         .requestMatchers("/actuator/info", "/actuator/metrics/**").hasRole(Role.ADMIN.name())
                         .anyRequest().denyAll())
                 .build();
