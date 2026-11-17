@@ -1,0 +1,23 @@
+# Build output
+target/
+
+# IDE and OS files
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+.env.*
+
+# Event files written by the generator (--out)
+generated-events/
+
+# Logs
+*.log
