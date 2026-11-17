@@ -4,7 +4,7 @@ A small security analytics pipeline: a Spring Boot service that ingests web secu
 
 **Stack:** Java 21 (virtual threads) · Spring Boot 4.1 · PostgreSQL 17 + TimescaleDB · Redis · Flyway · JdbcTemplate · Spring Security (API keys) · Testcontainers · Docker Compose.
 
-> **Status: work in progress.** The project is built in milestones (see [Development process](#development-process)). **Available now:** authenticated event ingestion with validation, duplicate detection and storage in a TimescaleDB hypertable. Sections marked *coming* are filled in as each milestone lands.
+> **Status: work in progress.** The project is built in milestones (see [Development process](#development-process)). **Available now:** authenticated event ingestion with validation, duplicate detection, enrichment (attack type and threat score, including the Redis-backed repeat-offender rule) and storage in a TimescaleDB hypertable. Sections marked *coming* are filled in as each milestone lands.
 
 ## Quick start
 
@@ -54,7 +54,52 @@ The database credentials and API keys in `docker-compose.yml` and `application.y
 
 ## Enrichment and threat scoring
 
-*Coming.*
+Every stored event gets an **attack type** and a **threat score** (0–100), computed once at ingest.
+
+### Attack type
+
+| `rule.category` | `attackType` |
+|---|---|
+| `INJECTION` | SQL/Command Injection |
+| `XSS` | Cross-Site Scripting |
+| `PROTOCOL_VIOLATION` | Protocol Anomaly |
+| `DATA_LEAKAGE` | Data Exfiltration |
+| `BOT` | Bot Activity |
+| `DOS` | Denial of Service |
+| `RATE_LIMIT` | Rate Limiting |
+
+### Threat score
+
+The score is the sum of independent rules, capped at 100. Each rule is its own class (`ScoreRule`), so a new rule is a new class; weights live on the enums and in `miniwsa.scoring.*`.
+
+| Rule | Points | Configured in |
+|---|---|---|
+| Severity | `CRITICAL` 40, `HIGH` 30, `MEDIUM` 20, `LOW` 10 | `Severity` enum |
+| Action | `DENY` +20, `ALERT` +10, `MONITOR` +0 | `Action` enum |
+| Sensitive path | +15 if the path contains `/admin` or `/login`, case-insensitive (A7); `/administrator` matches, `/wp-admin` doesn't | `miniwsa.scoring.sensitive-path` |
+| Repeat offender | +15 if at least 5 *other* events from the same client IP fall in the 10 minutes up to this event (A5, A6) | `miniwsa.scoring.repeat-offender` |
+
+Example: the sample event (`CRITICAL`, `DENY`, `/api/v1/login`) scores 40 + 20 + 15 = **75**, or **90** from a repeat offender.
+
+With these weights the maximum is 40 + 20 + 15 + 15 = **90**, so the cap of 100 never triggers today. It is still implemented and tested, because weights are configurable and rules get added.
+
+### Repeat-offender rule
+
+State lives in **Redis**: one sorted set per client IP (`miniwsa:ro:<ip>`), member = `eventId:timestamp`, score = event time in milliseconds. A Lua script counts, records and prunes in one atomic step.
+
+| Property | How |
+|---|---|
+| **Event time (A5)** | The window is `[event.timestamp − 10m, event.timestamp]`, so out-of-order arrivals are counted by when they happened, not when they arrived. A batch is processed in event-time order, so earlier events of the same request count (A6). |
+| **Scores are frozen at ingest** | A late event doesn't re-score events already stored. |
+| **Atomic across instances** | Each IP's update is one Lua script call, which Redis runs atomically, so several app instances see consistent counts. This is why the state is in Redis, not in an in-memory map. |
+| **Idempotent (A4)** | The member is the event's identity, so a retried event neither counts itself nor inflates the others; the same `eventId` at another time is another event. |
+| **Efficient** | One script call per IP per request, all sent in a single pipeline: one round trip per request. |
+| **Bounded memory** | Entries older than 1 hour before the IP's newest event are pruned (relative to event time, so historical data works), and idle IPs expire after 2 hours. |
+| **Cluster-ready** | Each script call touches a single key, so it also works on Redis Cluster (a multi-key script across IPs wouldn't). |
+
+**Trade-offs:**
+- **Redis is written before Postgres.** If the database insert then fails, Redis remembers events that were never stored. A client retry is still safe (idempotent), at the cost of slightly inflated counts for events that are never retried. The production fix is a log-based pipeline: Kafka partitioned by client IP feeding a stateful stream processor.
+- **Fail open.** If Redis is down or hanging, ingestion continues: events are scored without the repeat bonus, a `WARN` is logged and the `miniwsa.enrichment.repeat_offender.unavailable` metric is incremented. In security analytics, losing events is worse than under-scoring some for a while. Redis timeouts are 500 ms (Lettuce's default is 60 s), so an outage costs at most about half a second per request; an integration test pauses and stops Redis to prove it.
 
 ## API reference
 
@@ -122,6 +167,7 @@ Unknown fields are ignored, so producers can add fields without breaking ingesti
 
 - **All-or-nothing (A1).** If any event is invalid, the response is `400` listing every error, and nothing is stored. Each element is converted separately, so a type error is reported with its index. A type error stops checks on that element, so its other fields are validated once the type is fixed.
 - **Duplicates (A4).** An event is identified by `(eventId, timestamp)`. Sending it again stores nothing and reports it as a duplicate; a request made only of duplicates still returns `201`, so retries are safe. The same `eventId` with a different timestamp is a different event.
+- **Enrichment.** Each event in the response carries its `attackType` and `threatScore` (see [Enrichment and threat scoring](#enrichment-and-threat-scoring)). For a duplicate they are computed for this request and not stored; the stored row keeps the score from its first ingestion.
 - **Durable acknowledgment.** `201` means the events are committed to the database. Ingestion is synchronous on purpose: there is no in-memory queue that could lose acknowledged events.
 
 Single event:
@@ -139,8 +185,10 @@ curl.exe -X POST http://localhost:8080/v1/events/ingest -H "Content-Type: applic
 ```json
 {
   "received": 1, "stored": 1, "duplicates": 0,
-  "receivedAt": "2026-11-17T15:54:46.978Z",
-  "events": [ { "eventId": "evt-00132", "duplicate": false } ]
+  "receivedAt": "2026-11-17T17:56:17.558Z",
+  "events": [
+    { "eventId": "evt-00132", "attackType": "SQL/Command Injection", "threatScore": 75, "duplicate": false }
+  ]
 }
 ```
 
@@ -159,11 +207,11 @@ curl.exe -X POST http://localhost:8080/v1/events/ingest -H "Content-Type: applic
 ```json
 {
   "received": 3, "stored": 2, "duplicates": 1,
-  "receivedAt": "2026-11-17T15:54:47.085Z",
+  "receivedAt": "2026-11-17T17:56:17.704Z",
   "events": [
-    { "eventId": "evt-00133", "duplicate": false },
-    { "eventId": "evt-00134", "duplicate": false },
-    { "eventId": "evt-00132", "duplicate": true }
+    { "eventId": "evt-00133", "attackType": "Bot Activity", "threatScore": 20, "duplicate": false },
+    { "eventId": "evt-00134", "attackType": "Cross-Site Scripting", "threatScore": 40, "duplicate": false },
+    { "eventId": "evt-00132", "attackType": "SQL/Command Injection", "threatScore": 75, "duplicate": true }
   ]
 }
 ```
@@ -202,7 +250,7 @@ Swagger UI is coming at `/swagger-ui.html`.
 
 ## Running tests
 
-`./mvnw verify` (PowerShell: `.\mvnw.cmd verify`) runs unit tests (Surefire, `*Test`) and integration tests (Failsafe, `*IT`). Integration tests start the full application on a random port against a TimescaleDB container (Testcontainers), so Docker must be running. If containers can't be found, restart Docker Desktop.
+`./mvnw verify` (PowerShell: `.\mvnw.cmd verify`) runs unit tests (Surefire, `*Test`) and integration tests (Failsafe, `*IT`). Integration tests start the full application on a random port against TimescaleDB and Redis containers (Testcontainers), so Docker must be running. If containers can't be found, restart Docker Desktop. Integration tests log every HTTP exchange (method, path, status, bodies; never headers) under the name of the test that made it.
 
 | Area | Covered by |
 |---|---|
@@ -212,6 +260,12 @@ Swagger UI is coming at `/swagger-ui.html`.
 | Problem responses; no leaking of exception text | `GlobalExceptionHandlerTest` |
 | API keys, roles, 401/403, public health, error dispatch | `ApiKeyAuthenticatorTest`, `SecurityIT` |
 | Multi-row insert, duplicate detection, chunking | `JdbcEventWriteRepositoryIT` |
+| The same event from 8 concurrent requests is stored exactly once | `ConcurrentIngestIT` |
+| Attack type for every category; every score rule and its boundaries; the sample event's 75 and 90; the cap | `AttackTypeClassifierTest`, `*ScoreRuleTest`, `ThreatScoreCalculatorTest` |
+| Event-time ordering, request order of results, fail-open | `EnrichmentServiceTest` |
+| Repeat-offender state in Redis: counts 0–5, alignment, out-of-order arrival, retries, same id at two times, window boundaries, isolation per IP, TTL, pruning, script cache loss | `RedisRepeatOffenderTrackerIT` |
+| Enrichment end to end: 6th and 7th events get +15, across requests, out-of-order batches, no inflation from retries | `EnrichmentIT` |
+| Redis paused or stopped: ingestion still succeeds within 2 s | `RedisUnavailableIT` |
 | Ingest API end to end: single, batch, all-or-nothing, indexed errors, idempotency, future timestamps, normalization | `IngestIT` |
 | Hypertable migration | `MigrationIT` |
 
@@ -242,7 +296,7 @@ Other decisions so far:
 
 ## Observability
 
-*Coming.* Each ingest request logs one line with counts and duration; payloads are never logged, because events are attacker-controlled and may contain sensitive data. In Docker, logs are structured JSON (ECS).
+*Coming:* the full metrics list. Available now: `/actuator/health` (public; shows `db` and `redis` status), and for the `ADMIN` key `/actuator/info` and `/actuator/metrics`, including `miniwsa.security.auth.failures` and `miniwsa.enrichment.repeat_offender.unavailable`. Each ingest request logs one line with counts and duration; payloads are never logged, because events are attacker-controlled and may contain sensitive data. In Docker, logs are structured JSON (ECS).
 
 ## Security
 
