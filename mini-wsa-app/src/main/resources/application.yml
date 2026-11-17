@@ -1,0 +1,5 @@
+spring:
+  application.name: mini-wsa
+  # The workload is I/O-bound (Postgres, Redis): every request runs on a cheap virtual thread,
+  # and concurrency is bounded at the resources (connection pools) instead.
+  threads.virtual.enabled: true
