@@ -13,3 +13,8 @@ spring:
       # instead of an ever-growing queue.
       maximum-pool-size: 10
       connection-timeout: 2000
+server:
+  # Container-level errors (outside Spring MVC) must not leak exception text or stack traces either.
+  error:
+    include-stacktrace: never
+    include-message: never
