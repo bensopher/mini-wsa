@@ -1,6 +1,9 @@
 package com.bensopher.miniwsa;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureRestTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -23,6 +26,8 @@ import java.time.Instant;
 @Import(TestClockConfig.class)
 public abstract class AbstractIntegrationTest {
 
+    private static final Logger log = LoggerFactory.getLogger(AbstractIntegrationTest.class);
+
     /** The server's "now" at the start of every test. */
     protected static final Instant NOW = Instant.parse("2026-11-18T10:15:30.123Z");
 
@@ -35,7 +40,7 @@ public abstract class AbstractIntegrationTest {
         TIMESCALE.start();
     }
 
-    @Autowired
+    /** A client for this test's server that logs every exchange; see {@link ExchangeLoggingInterceptor}. */
     protected RestTestClient client;
 
     @Autowired
@@ -44,8 +49,15 @@ public abstract class AbstractIntegrationTest {
     @Autowired
     protected MutableClock clock;
 
+    @Autowired
+    void setClient(RestTestClient serverClient) {
+        this.client = serverClient.mutate().requestInterceptor(new ExchangeLoggingInterceptor()).build();
+    }
+
     @BeforeEach
-    void resetState() {
+    void resetState(TestInfo test) {
+        // Marks where each test starts in the output, so the exchanges logged below it can be attributed.
+        log.info("=== {}.{}", getClass().getSimpleName(), test.getTestMethod().map(m -> m.getName()).orElse("?"));
         jdbc.execute("TRUNCATE security_events");
         clock.set(NOW);
     }
