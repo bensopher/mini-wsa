@@ -17,6 +17,9 @@ miniwsa:
   ingest:
     max-batch-size: 1000
     max-future-skew: 5m      # A3
+  scoring:
+    sensitive-path: { patterns: [/admin, /login], bonus: 15 }   # A7
+    repeat-offender: { threshold: 5, bonus: 15 }                # A6
   security:
     # Dev defaults only (documented in the README); real deployments inject keys from a secrets manager via env.
     api-keys:
