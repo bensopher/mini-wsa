@@ -33,5 +33,6 @@ server:
     include-message: never
 management:
   endpoints.web.exposure.include: health,info,metrics
-  # Health is public but only reveals UP/DOWN per component (db, redis). Production would use when-authorized.
-  endpoint.health.show-details: always
+  # Health is public, so it lists each component's UP/DOWN only. Details (disk paths and sizes, database
+  # product) stay hidden.
+  endpoint.health.show-components: always

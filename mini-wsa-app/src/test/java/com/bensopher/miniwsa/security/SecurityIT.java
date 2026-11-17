@@ -14,10 +14,14 @@ class SecurityIT extends AbstractIntegrationTest {
     MeterRegistry meterRegistry;
 
     @Test
-    void healthIsPublic() {
+    void healthIsPublicAndShowsComponentStatusWithoutDetails() {
         anonymous().get().uri("/actuator/health").exchange()
                 .expectStatus().isOk()
-                .expectBody().jsonPath("$.status").isEqualTo("UP");
+                .expectBody()
+                .jsonPath("$.status").isEqualTo("UP")
+                .jsonPath("$.components.db.status").isEqualTo("UP")
+                .jsonPath("$.components.db.details").doesNotExist()
+                .jsonPath("$.components.diskSpace.details").doesNotExist();
     }
 
     @Test
