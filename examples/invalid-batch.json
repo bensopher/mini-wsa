@@ -1,0 +1,32 @@
+[
+  {
+    "eventId": "evt-00200",
+    "timestamp": "2026-05-20T14:40:00Z",
+    "configId": 14227,
+    "clientIp": "192.0.2.10",
+    "path": "/admin",
+    "method": "GET",
+    "rule": { "id": "920100", "severity": "LOW", "category": "PROTOCOL_VIOLATION" },
+    "action": "MONITOR"
+  },
+  {
+    "eventId": "evt-00201",
+    "timestamp": "2026-05-20T14:40:01Z",
+    "configId": 14227,
+    "clientIp": "192.0.2.11",
+    "path": "/admin",
+    "method": "GET",
+    "rule": { "id": "920100", "severity": "SEVERE", "category": "PROTOCOL_VIOLATION" },
+    "action": "MONITOR"
+  },
+  {
+    "eventId": "evt-00202",
+    "timestamp": "20/05/2026",
+    "configId": "abc",
+    "clientIp": "192.0.2.12",
+    "path": "/admin",
+    "method": "GET",
+    "rule": { "id": "920100", "severity": "LOW", "category": "PROTOCOL_VIOLATION" },
+    "action": "MONITOR"
+  }
+]

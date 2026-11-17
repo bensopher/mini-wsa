@@ -1,0 +1,36 @@
+[
+  {
+    "eventId": "evt-00133",
+    "timestamp": "2026-05-20T14:33:02Z",
+    "configId": 14227,
+    "clientIp": "198.51.100.7",
+    "hostname": "shop.example.org",
+    "path": "/checkout",
+    "method": "GET",
+    "statusCode": 200,
+    "userAgent": "python-requests/2.32.3",
+    "rule": { "id": "990012", "name": "BOT_DETECTED", "severity": "MEDIUM", "category": "BOT" },
+    "action": "MONITOR",
+    "geoLocation": { "country": "US", "city": "Ashburn" }
+  },
+  {
+    "eventId": "evt-00134",
+    "timestamp": "2026-05-20T16:34:45+02:00",
+    "configId": 14228,
+    "clientIp": "2001:DB8:0:0:0:0:0:1",
+    "path": "/search",
+    "method": "GET",
+    "rule": { "id": "941100", "name": "XSS_ATTACK", "severity": "HIGH", "category": "XSS" },
+    "action": "ALERT"
+  },
+  {
+    "eventId": "evt-00132",
+    "timestamp": "2026-05-20T14:32:10Z",
+    "configId": 14227,
+    "clientIp": "203.0.113.42",
+    "path": "/api/v1/login",
+    "method": "POST",
+    "rule": { "id": "950001", "name": "SQL_INJECTION", "severity": "CRITICAL", "category": "INJECTION" },
+    "action": "DENY"
+  }
+]
