@@ -9,6 +9,9 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
@@ -38,6 +41,21 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     ProblemDetail handlePayloadTooLarge(PayloadTooLargeException ex, HttpServletRequest request) {
         return problem(HttpStatus.CONTENT_TOO_LARGE, ProblemTypes.PAYLOAD_TOO_LARGE, "Payload too large",
                 ex.getMessage(), request);
+    }
+
+    /** Missing or unknown API key. The detail is fixed text: the presented key is never echoed. */
+    @ExceptionHandler(AuthenticationException.class)
+    ProblemDetail handleUnauthenticated(AuthenticationException ex, HttpServletRequest request) {
+        String detail = ex instanceof BadCredentialsException
+                ? "The API key is not valid"
+                : "An API key is required in the X-API-Key header";
+        return problem(HttpStatus.UNAUTHORIZED, ProblemTypes.UNAUTHORIZED, "Unauthorized", detail, request);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    ProblemDetail handleForbidden(AccessDeniedException ex, HttpServletRequest request) {
+        return problem(HttpStatus.FORBIDDEN, ProblemTypes.FORBIDDEN, "Forbidden",
+                "This API key does not have the role required for this endpoint", request);
     }
 
     /** Anything unexpected: a generic body (no exception text leaks), full details in the log under an id. */

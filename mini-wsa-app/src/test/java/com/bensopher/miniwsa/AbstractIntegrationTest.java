@@ -38,4 +38,28 @@ public abstract class AbstractIntegrationTest {
     void resetDatabase() {
         jdbc.execute("TRUNCATE security_events");
     }
+
+    /** A client sending the dev ingest key (role INGEST). */
+    protected RestTestClient asIngester() {
+        return withKey("dev-ingest-key");
+    }
+
+    /** A client sending the dev read key (role READ). */
+    protected RestTestClient asReader() {
+        return withKey("dev-read-key");
+    }
+
+    /** A client sending the dev admin key (roles READ and ADMIN). */
+    protected RestTestClient asAdmin() {
+        return withKey("dev-admin-key");
+    }
+
+    /** A client sending no API key. */
+    protected RestTestClient anonymous() {
+        return client;
+    }
+
+    protected RestTestClient withKey(String apiKey) {
+        return client.mutate().defaultHeader("X-API-Key", apiKey).build();
+    }
 }

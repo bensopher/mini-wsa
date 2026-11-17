@@ -13,8 +13,19 @@ spring:
       # instead of an ever-growing queue.
       maximum-pool-size: 10
       connection-timeout: 2000
+miniwsa:
+  security:
+    # Dev defaults only (documented in the README); real deployments inject keys from a secrets manager via env.
+    api-keys:
+      - { name: edge-ingest, key: "${MINIWSA_INGEST_KEY:dev-ingest-key}", roles: [INGEST] }
+      - { name: dashboard,   key: "${MINIWSA_READ_KEY:dev-read-key}",     roles: [READ] }
+      - { name: soc-admin,   key: "${MINIWSA_ADMIN_KEY:dev-admin-key}",   roles: [READ, ADMIN] }
 server:
   # Container-level errors (outside Spring MVC) must not leak exception text or stack traces either.
   error:
     include-stacktrace: never
     include-message: never
+management:
+  endpoints.web.exposure.include: health,info,metrics
+  # Health is public but only reveals UP/DOWN per component (db, redis). Production would use when-authorized.
+  endpoint.health.show-details: always

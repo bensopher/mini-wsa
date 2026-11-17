@@ -10,6 +10,8 @@ public final class ProblemTypes {
     public static final URI VALIDATION = URI.create(BASE + "validation");
     public static final URI MALFORMED_JSON = URI.create(BASE + "malformed-json");
     public static final URI PAYLOAD_TOO_LARGE = URI.create(BASE + "payload-too-large");
+    public static final URI UNAUTHORIZED = URI.create(BASE + "unauthorized");
+    public static final URI FORBIDDEN = URI.create(BASE + "forbidden");
     public static final URI INTERNAL = URI.create(BASE + "internal");
 
     private ProblemTypes() {
