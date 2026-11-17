@@ -58,13 +58,16 @@ class IngestIT extends AbstractIntegrationTest {
                         {
                           "received": 1, "stored": 1, "duplicates": 0,
                           "receivedAt": "2026-11-18T10:15:30.123Z",
-                          "events": [ { "eventId": "evt-00132", "duplicate": false } ]
+                          "events": [ { "eventId": "evt-00132", "attackType": "SQL/Command Injection",
+                                        "threatScore": 75, "duplicate": false } ]
                         }
                         """, JsonCompareMode.STRICT);
 
-        assertThat(jdbc.queryForMap("SELECT event_id, host(client_ip) AS ip, severity FROM security_events"))
+        assertThat(jdbc.queryForMap(
+                "SELECT event_id, host(client_ip) AS ip, severity, attack_type, threat_score FROM security_events"))
                 .containsEntry("event_id", "evt-00132").containsEntry("ip", "203.0.113.42")
-                .containsEntry("severity", "CRITICAL");
+                .containsEntry("severity", "CRITICAL").containsEntry("attack_type", "SQL/Command Injection")
+                .containsEntry("threat_score", 75);
     }
 
     @Test

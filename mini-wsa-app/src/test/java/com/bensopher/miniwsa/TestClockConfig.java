@@ -5,7 +5,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 
 @TestConfiguration
-class TestClockConfig {
+public class TestClockConfig {
 
     /** Replaces the system clock wherever the application injects a {@code Clock}. */
     @Bean

@@ -2,6 +2,8 @@ package com.bensopher.miniwsa.ingest;
 
 import com.bensopher.miniwsa.common.error.PayloadTooLargeException;
 import com.bensopher.miniwsa.common.error.RequestValidationException;
+import com.bensopher.miniwsa.enrichment.EnrichmentService;
+import com.bensopher.miniwsa.event.EnrichedEvent;
 import com.bensopher.miniwsa.event.SecurityEvent;
 import com.bensopher.miniwsa.ingest.IngestResponse.IngestedEvent;
 import org.slf4j.Logger;
@@ -13,8 +15,10 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -28,13 +32,15 @@ public class IngestService {
     private static final Logger log = LoggerFactory.getLogger(IngestService.class);
 
     private final EventPayloadParser parser;
+    private final EnrichmentService enrichment;
     private final JdbcEventWriteRepository repository;
     private final IngestProperties properties;
     private final Clock clock;
 
-    public IngestService(EventPayloadParser parser, JdbcEventWriteRepository repository,
+    public IngestService(EventPayloadParser parser, EnrichmentService enrichment, JdbcEventWriteRepository repository,
             IngestProperties properties, Clock clock) {
         this.parser = parser;
+        this.enrichment = enrichment;
         this.repository = repository;
         this.properties = properties;
         this.clock = clock;
@@ -58,15 +64,19 @@ public class IngestService {
                 unique.add(event);
             }
         }
-        Set<EventKey> stored = repository.insert(unique, receivedAt);
+        List<EnrichedEvent> enriched = enrichment.enrich(unique, receivedAt);
+        Set<EventKey> stored = repository.insert(enriched);
 
+        Map<EventKey, EnrichedEvent> enrichedByKey = new HashMap<>();
+        enriched.forEach(e -> enrichedByKey.put(EventKey.of(e.event()), e));
         Set<EventKey> reported = new HashSet<>();
         List<IngestedEvent> results = new ArrayList<>(events.size());
         for (SecurityEvent event : events) {
             EventKey key = EventKey.of(event);
+            EnrichedEvent result = enrichedByKey.get(key);
             // Stored by this request, and the first time this request mentions it: not a duplicate.
             boolean duplicate = !(stored.contains(key) && reported.add(key));
-            results.add(new IngestedEvent(event.eventId(), duplicate));
+            results.add(new IngestedEvent(event.eventId(), result.attackType(), result.threatScore(), duplicate));
         }
         IngestResponse response = new IngestResponse(events.size(), stored.size(), events.size() - stored.size(),
                 receivedAt, results);

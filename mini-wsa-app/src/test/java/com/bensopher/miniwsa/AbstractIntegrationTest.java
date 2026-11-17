@@ -35,8 +35,9 @@ public abstract class AbstractIntegrationTest {
     /** The server's "now" at the start of every test. */
     protected static final Instant NOW = Instant.parse("2026-11-18T10:15:30.123Z");
 
+    /** Shared with tests that need the database but their own Redis (see RedisUnavailableIT). */
     @ServiceConnection
-    static final PostgreSQLContainer TIMESCALE = new PostgreSQLContainer(
+    public static final PostgreSQLContainer TIMESCALE = new PostgreSQLContainer(
             DockerImageName.parse("timescale/timescaledb:2.32.0-pg17").asCompatibleSubstituteFor("postgres"))
             .withEnv("TIMESCALEDB_TELEMETRY", "off");
 

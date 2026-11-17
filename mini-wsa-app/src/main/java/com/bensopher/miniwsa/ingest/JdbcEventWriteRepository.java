@@ -1,5 +1,6 @@
 package com.bensopher.miniwsa.ingest;
 
+import com.bensopher.miniwsa.event.EnrichedEvent;
 import com.bensopher.miniwsa.event.SecurityEvent;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.SqlParameterValue;
@@ -20,16 +21,16 @@ import java.util.Set;
 @Repository
 public class JdbcEventWriteRepository {
 
-    /** 21 parameters per row x 500 rows stays far below Postgres's 65,535 bind-parameter limit. */
+    /** 23 parameters per row x 500 rows stays far below Postgres's 65,535 bind-parameter limit. */
     static final int CHUNK_SIZE = 500;
 
     private static final String COLUMNS = """
             event_id, event_time, received_at, config_id, policy_id, client_ip, hostname, path, method, \
             status_code, user_agent, rule_id, rule_name, rule_message, severity, category, action, \
-            geo_country, geo_city, request_size, response_size""";
+            geo_country, geo_city, request_size, response_size, attack_type, threat_score""";
 
     private static final String ROW_PLACEHOLDERS =
-            "(?, ?, ?, ?, ?, CAST(? AS inet), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            "(?, ?, ?, ?, ?, CAST(? AS inet), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     private final JdbcTemplate jdbc;
 
@@ -46,27 +47,28 @@ public class JdbcEventWriteRepository {
      * rows that were inserted.
      */
     @Transactional
-    public Set<EventKey> insert(List<SecurityEvent> events, Instant receivedAt) {
+    public Set<EventKey> insert(List<EnrichedEvent> events) {
         Set<EventKey> inserted = new HashSet<>();
         for (int from = 0; from < events.size(); from += CHUNK_SIZE) {
-            List<SecurityEvent> chunk = events.subList(from, Math.min(from + CHUNK_SIZE, events.size()));
+            List<EnrichedEvent> chunk = events.subList(from, Math.min(from + CHUNK_SIZE, events.size()));
             String sql = "INSERT INTO security_events (" + COLUMNS + ") VALUES "
                     + String.join(", ", Collections.nCopies(chunk.size(), ROW_PLACEHOLDERS))
                     + " ON CONFLICT (event_id, event_time) DO NOTHING RETURNING event_id, event_time";
             inserted.addAll(jdbc.query(sql,
                     (rs, row) -> new EventKey(rs.getString(1), rs.getObject(2, OffsetDateTime.class).toInstant()),
-                    parameters(chunk, receivedAt)));
+                    parameters(chunk)));
         }
         return inserted;
     }
 
     /** Explicit SQL types, so NULLs in optional columns need no extra metadata round trip to bind. */
-    private static Object[] parameters(List<SecurityEvent> events, Instant receivedAt) {
-        List<SqlParameterValue> values = new ArrayList<>(events.size() * 21);
-        for (SecurityEvent e : events) {
+    private static Object[] parameters(List<EnrichedEvent> events) {
+        List<SqlParameterValue> values = new ArrayList<>(events.size() * 23);
+        for (EnrichedEvent enriched : events) {
+            SecurityEvent e = enriched.event();
             values.add(text(e.eventId()));
             values.add(timestamp(e.timestamp()));
-            values.add(timestamp(receivedAt));
+            values.add(timestamp(enriched.receivedAt()));
             values.add(new SqlParameterValue(Types.BIGINT, e.configId()));
             values.add(text(e.policyId()));
             values.add(text(e.clientIp()));
@@ -85,6 +87,8 @@ public class JdbcEventWriteRepository {
             values.add(text(e.geoLocation() == null ? null : e.geoLocation().city()));
             values.add(new SqlParameterValue(Types.BIGINT, e.requestSize()));
             values.add(new SqlParameterValue(Types.BIGINT, e.responseSize()));
+            values.add(text(enriched.attackType()));
+            values.add(new SqlParameterValue(Types.SMALLINT, enriched.threatScore()));
         }
         return values.toArray();
     }

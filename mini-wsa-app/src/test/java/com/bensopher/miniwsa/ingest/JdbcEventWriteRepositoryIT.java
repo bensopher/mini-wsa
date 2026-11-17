@@ -1,6 +1,7 @@
 package com.bensopher.miniwsa.ingest;
 
 import com.bensopher.miniwsa.AbstractIntegrationTest;
+import com.bensopher.miniwsa.event.EnrichedEvent;
 import com.bensopher.miniwsa.event.SecurityEvent;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -8,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 import static com.bensopher.miniwsa.ingest.TestEvents.minimalEvent;
@@ -24,14 +26,14 @@ class JdbcEventWriteRepositoryIT extends AbstractIntegrationTest {
 
     @Test
     void storesEveryField() {
-        repository.insert(List.of(sampleEvent("evt-00132", EVENT_TIME)), RECEIVED_AT);
+        insert(List.of(sampleEvent("evt-00132", EVENT_TIME)));
 
         Map<String, Object> row = jdbc.queryForMap("""
                 SELECT event_id, event_time = '2026-05-20T14:32:10Z' AS time_ok,
                        received_at = '2026-11-18T10:15:30.123Z' AS received_ok, config_id, policy_id,
                        host(client_ip) AS client_ip, hostname, path, method, status_code, user_agent, rule_id,
                        rule_name, rule_message, severity, category, action, geo_country, geo_city,
-                       request_size, response_size
+                       request_size, response_size, attack_type, threat_score
                 FROM security_events
                 """);
         assertThat(row).containsAllEntriesOf(Map.ofEntries(
@@ -43,12 +45,13 @@ class JdbcEventWriteRepositoryIT extends AbstractIntegrationTest {
                 Map.entry("rule_name", "SQL_INJECTION"), Map.entry("rule_message", "SQL Injection Attack Detected"),
                 Map.entry("severity", "CRITICAL"), Map.entry("category", "INJECTION"), Map.entry("action", "DENY"),
                 Map.entry("geo_country", "CN"), Map.entry("geo_city", "Beijing"),
-                Map.entry("request_size", 1024L), Map.entry("response_size", 256L)));
+                Map.entry("request_size", 1024L), Map.entry("response_size", 256L),
+                Map.entry("attack_type", "SQL/Command Injection"), Map.entry("threat_score", 75)));
     }
 
     @Test
     void storesMissingOptionalFieldsAsNullAndIpv6InCanonicalForm() {
-        repository.insert(List.of(minimalEvent("e1", EVENT_TIME, "2001:db8::1")), RECEIVED_AT);
+        insert(List.of(minimalEvent("e1", EVENT_TIME, "2001:db8::1")));
 
         Map<String, Object> row = jdbc.queryForMap(
                 "SELECT host(client_ip) AS ip, policy_id, status_code, geo_country, request_size FROM security_events");
@@ -61,9 +64,9 @@ class JdbcEventWriteRepositoryIT extends AbstractIntegrationTest {
     void returnsOnlyTheKeysItInserted() {
         SecurityEvent first = sampleEvent("e1", EVENT_TIME);
         SecurityEvent second = sampleEvent("e2", EVENT_TIME);
-        repository.insert(List.of(first), RECEIVED_AT);
+        insert(List.of(first));
 
-        var inserted = repository.insert(List.of(first, second), RECEIVED_AT);
+        var inserted = insert(List.of(first, second));
 
         assertThat(inserted).containsExactly(EventKey.of(second));
         assertThat(count()).isEqualTo(2);
@@ -74,7 +77,7 @@ class JdbcEventWriteRepositoryIT extends AbstractIntegrationTest {
         SecurityEvent original = sampleEvent("e1", EVENT_TIME);
         SecurityEvent later = sampleEvent("e1", EVENT_TIME.plusSeconds(1));
 
-        var inserted = repository.insert(List.of(original, later), RECEIVED_AT);
+        var inserted = insert(List.of(original, later));
 
         assertThat(inserted).containsExactlyInAnyOrder(EventKey.of(original), EventKey.of(later));
     }
@@ -85,10 +88,17 @@ class JdbcEventWriteRepositoryIT extends AbstractIntegrationTest {
                 .mapToObj(i -> sampleEvent("e" + i, EVENT_TIME.plusMillis(i)))
                 .toList();
 
-        var inserted = repository.insert(events, RECEIVED_AT);
+        var inserted = insert(events);
 
         assertThat(inserted).hasSize(1001);
         assertThat(count()).isEqualTo(1001);
+    }
+
+    /** Inserts the events as enriched by a fixed classifier and score; enrichment itself is tested elsewhere. */
+    private Set<EventKey> insert(List<SecurityEvent> events) {
+        return repository.insert(events.stream()
+                .map(e -> new EnrichedEvent(e, "SQL/Command Injection", 75, RECEIVED_AT))
+                .toList());
     }
 
     private int count() {

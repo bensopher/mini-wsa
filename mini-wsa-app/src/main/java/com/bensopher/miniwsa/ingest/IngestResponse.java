@@ -9,7 +9,11 @@ import java.util.List;
  */
 public record IngestResponse(int received, int stored, int duplicates, Instant receivedAt, List<IngestedEvent> events) {
 
-    /** {@code duplicate} is true when the same (eventId, timestamp) was already stored or appeared earlier in the request. */
-    public record IngestedEvent(String eventId, boolean duplicate) {
+    /**
+     * {@code duplicate} is true when the same (eventId, timestamp) was already stored or appeared earlier in the
+     * request. A duplicate's attack type and score are computed for this request and not stored: the stored
+     * row keeps the score from its first ingestion.
+     */
+    public record IngestedEvent(String eventId, String attackType, int threatScore, boolean duplicate) {
     }
 }
