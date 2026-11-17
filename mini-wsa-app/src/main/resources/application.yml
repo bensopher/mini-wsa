@@ -20,6 +20,9 @@ miniwsa:
       - { name: edge-ingest, key: "${MINIWSA_INGEST_KEY:dev-ingest-key}", roles: [INGEST] }
       - { name: dashboard,   key: "${MINIWSA_READ_KEY:dev-read-key}",     roles: [READ] }
       - { name: soc-admin,   key: "${MINIWSA_ADMIN_KEY:dev-admin-key}",   roles: [READ, ADMIN] }
+  limits:
+    max-request-body: 5MB
+    json: { max-nesting-depth: 20, max-string-length: 65536 }
 server:
   # Container-level errors (outside Spring MVC) must not leak exception text or stack traces either.
   error:

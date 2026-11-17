@@ -73,11 +73,29 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @Override
     protected ResponseEntity<Object> handleHttpMessageNotReadable(HttpMessageNotReadableException ex,
             HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        // A chunked body that crosses the size limit fails while the parser is reading it, so the limit
+        // error arrives wrapped in the parser's exception.
+        PayloadTooLargeException tooLarge = findCause(ex, PayloadTooLargeException.class);
+        if (tooLarge != null) {
+            ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONTENT_TOO_LARGE, tooLarge.getMessage());
+            problem.setType(ProblemTypes.PAYLOAD_TOO_LARGE);
+            problem.setTitle("Payload too large");
+            return ResponseEntity.status(HttpStatus.CONTENT_TOO_LARGE).body(problem);
+        }
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
                 "The request body is missing or is not valid JSON");
         problem.setType(ProblemTypes.MALFORMED_JSON);
         problem.setTitle("Malformed JSON");
         return ResponseEntity.badRequest().body(problem);
+    }
+
+    private static <T extends Throwable> T findCause(Throwable ex, Class<T> type) {
+        for (Throwable t = ex; t != null; t = t.getCause()) {
+            if (type.isInstance(t)) {
+                return type.cast(t);
+            }
+        }
+        return null;
     }
 
     private static ProblemDetail problem(HttpStatus status, URI type, String title, String detail,
