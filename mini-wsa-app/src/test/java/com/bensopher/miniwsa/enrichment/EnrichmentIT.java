@@ -43,6 +43,18 @@ class EnrichmentIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void storedScoresAreVisibleThroughTheSamplesApi() {
+        ingest(batch(IntStream.range(0, 7).mapToObj(i -> event("e" + i, i)).toList()));
+
+        // Samples are newest first: e6 and e5 carry the repeat bonus.
+        asReader().get().uri("/v1/events/samples?from=2026-05-20T00:00:00Z&to=2026-05-21T00:00:00Z").exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.items[*].eventId").isEqualTo(List.of("e6", "e5", "e4", "e3", "e2", "e1", "e0"))
+                .jsonPath("$.items[*].threatScore").isEqualTo(List.of(90, 90, 75, 75, 75, 75, 75));
+    }
+
+    @Test
     void eventsFromEarlierRequestsCount() {
         ingest(batch(IntStream.range(0, 5).mapToObj(i -> event("e" + i, i)).toList()));
 
