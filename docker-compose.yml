@@ -36,5 +36,14 @@ services:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
 
+  # Seeds the running app with generated events: docker compose --profile seed run --rm seed
+  seed:
+    build: { context: ., target: generator }
+    profiles: [seed]
+    environment:
+      MINIWSA_API_KEY: dev-ingest-key   # dev-only key, documented in the README
+    command: ["--target", "http://app:8080", "--count", "10000", "--wait-for-health"]
+    depends_on: [app]
+
 volumes:
   db-data: {}
