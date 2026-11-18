@@ -52,6 +52,30 @@ class GeneratorCommandTest {
     }
 
     @Test
+    void sendsToTheApiAndPrintsASummary() throws Exception {
+        try (StubApi api = new StubApi()) {
+            int exit = run("--count", "250", "--batch-size", "100", "--target", api.uri().toString(),
+                    "--wait-for-health", "--api-key", "my-key");
+
+            assertThat(exit).isZero();
+            assertThat(api.bodies).hasSize(3);
+            assertThat(api.apiKeys).containsOnly("my-key");
+            assertThat(out.toString()).contains("Sending 250 events", "Batches:        3 (status: {201=3})",
+                    "Events stored:  250", "events/s", "p95");
+        }
+    }
+
+    @Test
+    void exitsNonZeroWhenABatchIsNotStored() throws Exception {
+        try (StubApi api = new StubApi()) {
+            api.then(new StubApi.Reply(400, "{}", null));
+
+            assertThat(run("--count", "20", "--batch-size", "10", "--target", api.uri().toString())).isEqualTo(1);
+            assertThat(out.toString()).contains("{201=1, 400=1}");
+        }
+    }
+
+    @Test
     void readsShortDurations() {
         var converter = new GeneratorCommand.DurationConverter();
 
@@ -63,7 +87,7 @@ class GeneratorCommandTest {
     }
 
     private int run(String... args) {
-        CommandLine command = new CommandLine(new GeneratorCommand(EventGeneratorTest.CLOCK));
+        CommandLine command = new CommandLine(new GeneratorCommand(EventGeneratorTest.CLOCK, duration -> { }));
         command.setOut(new PrintWriter(out, true));
         command.setErr(new PrintWriter(err, true));
         return command.execute(args);

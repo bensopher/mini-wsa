@@ -8,6 +8,8 @@ import picocli.CommandLine.Spec;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.io.PrintWriter;
+import java.net.URI;
+import java.net.http.HttpClient;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -20,7 +22,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Command(name = "mini-wsa-generator", mixinStandardHelpOptions = true,
-        description = "Generates realistic security events and writes them to files.")
+        description = "Generates realistic security events and sends them to the ingest API, or writes them to files.")
 public class GeneratorCommand implements Callable<Integer> {
 
     @Spec
@@ -44,25 +46,44 @@ public class GeneratorCommand implements Callable<Integer> {
             + "(default: ${DEFAULT-VALUE}).", defaultValue = "0.4")
     double waveRatio;
 
-    @Option(names = "--out", required = true, description = "Directory to write event files to.")
+    @Option(names = "--out", description = "Write event files to this directory instead of sending them.")
     Path out;
 
     @Option(names = "--format", description = "File format: ${COMPLETION-CANDIDATES} (default: ${DEFAULT-VALUE}).",
             defaultValue = "array")
     EventFiles.Format format;
 
-    @Option(names = "--batch-size", description = "Events per file (default: ${DEFAULT-VALUE}, at most 1000).",
-            defaultValue = "500")
+    @Option(names = "--batch-size", description = "Events per request or file (default: ${DEFAULT-VALUE}, at most "
+            + "1000).", defaultValue = "500")
     int batchSize;
 
+    @Option(names = "--target", description = "API base URL to POST to (default: ${DEFAULT-VALUE}).",
+            defaultValue = "http://localhost:8080")
+    URI target;
+
+    @Option(names = "--concurrency", description = "Requests in flight at once (default: ${DEFAULT-VALUE}).",
+            defaultValue = "4")
+    int concurrency;
+
+    @Option(names = "--wait-for-health", description = "Wait up to 90s for the API to be ready before sending.")
+    boolean waitForHealth;
+
+    // The default is not shown in --help, so a key taken from the environment is never printed.
+    @Option(names = "--api-key", description = "Sent as X-API-Key (default: env MINIWSA_API_KEY, else dev-ingest-key).",
+            defaultValue = "${env:MINIWSA_API_KEY:-dev-ingest-key}",
+            showDefaultValue = CommandLine.Help.Visibility.NEVER)
+    String apiKey;
+
     private final Clock clock;
+    private final IngestClient.Sleeper sleeper;
 
     public GeneratorCommand() {
-        this(Clock.systemUTC());
+        this(Clock.systemUTC(), Thread::sleep);
     }
 
-    GeneratorCommand(Clock clock) {
+    GeneratorCommand(Clock clock, IngestClient.Sleeper sleeper) {
         this.clock = clock;
+        this.sleeper = sleeper;
     }
 
     public static void main(String[] args) {
@@ -79,10 +100,31 @@ public class GeneratorCommand implements Callable<Integer> {
 
         EventGenerator.Run run = new EventGenerator(runSeed, clock, span, configIds, waveRatio).generate(count, runId);
         printWaves(run.waves(), console);
-        List<Path> files = new EventFiles(JsonMapper.builder().build()).write(batches(run.events()), out, format);
-        console.printf("Wrote %d events to %d files in %s%n", run.events().size(), files.size(),
-                out.toAbsolutePath());
-        return 0;
+        JsonMapper json = JsonMapper.builder().build();
+        if (out != null) {
+            List<Path> files = new EventFiles(json).write(batches(run.events()), out, format);
+            console.printf("Wrote %d events to %d files in %s%n", run.events().size(), files.size(),
+                    out.toAbsolutePath());
+            return 0;
+        }
+
+        HttpClient http = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(5))
+                .build();
+        boolean ready = !waitForHealth
+                || new HealthCheck(http, target).waitUntilReady(Duration.ofSeconds(90), Duration.ofSeconds(1));
+        if (!ready) {
+            spec.commandLine().getErr().printf("%s did not become ready within 90s%n", target);
+            return 1;
+        }
+        console.printf("Sending %d events to %s in batches of %d, %d at a time%n", run.events().size(), target,
+                batchSize, concurrency);
+        IngestClient client = new IngestClient(http, target, apiKey, json, sleeper, Duration.ofSeconds(1));
+        SendSummary summary = new BatchSender(client, concurrency).send(batches(run.events()));
+        summary.print(console);
+        // Non-zero if any batch wasn't stored, so scripts and CI notice.
+        return summary.failed() ? 1 : 0;
     }
 
     private void validate() {
@@ -90,7 +132,11 @@ public class GeneratorCommand implements Callable<Integer> {
             throw new ParameterException(spec.commandLine(), "--count must be at least 1");
         }
         if (batchSize < 1 || batchSize > 1000) {
-            throw new ParameterException(spec.commandLine(), "--batch-size must be between 1 and 1000 (the API's limit)");
+            throw new ParameterException(spec.commandLine(),
+                    "--batch-size must be between 1 and 1000 (the API's limit)");
+        }
+        if (concurrency < 1) {
+            throw new ParameterException(spec.commandLine(), "--concurrency must be at least 1");
         }
         if (waveRatio < 0 || waveRatio > 1) {
             throw new ParameterException(spec.commandLine(), "--wave-ratio must be between 0 and 1");
@@ -104,7 +150,9 @@ public class GeneratorCommand implements Callable<Integer> {
     private static void printWaves(List<AttackWaves.Wave> waves, PrintWriter console) {
         console.printf("%d attack waves:%n", waves.size());
         for (AttackWaves.Wave wave : waves) {
-            String clients = wave.clients().size() == 1 ? wave.clients().getFirst() : wave.clients().size() + " clients";
+            String clients = wave.clients().size() == 1
+                    ? wave.clients().getFirst()
+                    : wave.clients().size() + " clients";
             console.printf("  %-19s %4d events  %s -> %s  %s on %s%n", wave.kind(), wave.events(), wave.start(),
                     wave.end(), clients, wave.path());
         }
