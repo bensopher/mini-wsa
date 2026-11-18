@@ -8,15 +8,20 @@ import com.bensopher.miniwsa.event.SecurityEvent;
 import com.bensopher.miniwsa.event.Severity;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.data.redis.RedisConnectionFailureException;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(OutputCaptureExtension.class)
 class EnrichmentServiceTest {
 
     private static final Instant T0 = Instant.parse("2026-05-20T14:00:00Z");
@@ -76,6 +81,32 @@ class EnrichmentServiceTest {
 
         assertThat(enriched).extracting(EnrichedEvent::threatScore).containsExactly(0, 0);
         assertThat(meterRegistry.counter("miniwsa.enrichment.repeat_offender.unavailable").count()).isEqualTo(1);
+    }
+
+    @Test
+    void anOutageIsLoggedOnceWhenItStartsAndOnceWhenItEndsButCountedOnEveryRequest(CapturedOutput output) {
+        AtomicBoolean redisUp = new AtomicBoolean(false);
+        RepeatOffenderTracker flaky = sorted -> {
+            if (!redisUp.get()) {
+                throw new RedisConnectionFailureException("connection refused");
+            }
+            return List.of(0);
+        };
+        EnrichmentService service = service(flaky);
+
+        for (int i = 0; i < 3; i++) {
+            service.enrich(List.of(event("down-" + i, i)), RECEIVED_AT);
+        }
+        redisUp.set(true);
+        service.enrich(List.of(event("up", 3)), RECEIVED_AT);
+        service.enrich(List.of(event("still-up", 4)), RECEIVED_AT);
+        redisUp.set(false);
+        service.enrich(List.of(event("down-again", 5)), RECEIVED_AT);
+
+        assertThat(output.getOut().lines().filter(line -> line.contains("WARN"))).hasSize(2)
+                .allSatisfy(line -> assertThat(line).contains("Repeat-offender state unavailable"));
+        assertThat(output.getOut().lines().filter(line -> line.contains("available again"))).hasSize(1);
+        assertThat(meterRegistry.counter("miniwsa.enrichment.repeat_offender.unavailable").count()).isEqualTo(4);
     }
 
     private EnrichmentService service(RepeatOffenderTracker tracker) {
