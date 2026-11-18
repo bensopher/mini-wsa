@@ -4,7 +4,7 @@ A small security analytics pipeline: a Spring Boot service that ingests web secu
 
 **Stack:** Java 21 (virtual threads) · Spring Boot 4.1 · PostgreSQL 17 + TimescaleDB · Redis · Flyway · JdbcTemplate · Spring Security (API keys) · Testcontainers · Docker Compose.
 
-> **Status: work in progress.** The project is built in milestones (see [Development process](#development-process)). **Available now:** authenticated event ingestion with validation, duplicate detection, enrichment (attack type and threat score, including the Redis-backed repeat-offender rule), storage in a compressed TimescaleDB hypertable, and the stats summary and samples APIs. Sections marked *coming* are filled in as each milestone lands.
+> **Status: work in progress.** The project is built in milestones (see [Development process](#development-process)). **Available now:** authenticated event ingestion with validation, duplicate detection, enrichment (attack type and threat score, including the Redis-backed repeat-offender rule), storage in a compressed TimescaleDB hypertable, the stats summary and samples APIs, and a data generator that simulates attack waves. Sections marked *coming* are filled in as each milestone lands.
 
 ## Quick start
 
@@ -16,8 +16,8 @@ Bash (Git Bash, macOS, Linux):
 git clone https://github.com/bensopher/mini-wsa.git
 cd mini-wsa
 docker compose up --build -d
-curl http://localhost:8080/actuator/health
-curl -X POST http://localhost:8080/v1/events/ingest -H "Content-Type: application/json" -H "X-API-Key: dev-ingest-key" --data-binary @examples/single-event.json
+docker compose --profile seed run --rm seed
+curl http://localhost:8080/v1/stats/summary -H "X-API-Key: dev-read-key"
 ```
 
 PowerShell (use `curl.exe`: plain `curl` is an alias for `Invoke-WebRequest`):
@@ -26,17 +26,18 @@ PowerShell (use `curl.exe`: plain `curl` is an alias for `Invoke-WebRequest`):
 git clone https://github.com/bensopher/mini-wsa.git
 cd mini-wsa
 docker compose up --build -d
-curl.exe http://localhost:8080/actuator/health
-curl.exe -X POST http://localhost:8080/v1/events/ingest -H "Content-Type: application/json" -H "X-API-Key: dev-ingest-key" --data-binary "@examples/single-event.json"
+docker compose --profile seed run --rm seed
+curl.exe http://localhost:8080/v1/stats/summary -H "X-API-Key: dev-read-key"
 ```
 
-The first build downloads dependencies and takes a few minutes. The app is ready when `/actuator/health` returns `"status":"UP"`.
+The first build downloads dependencies and takes a few minutes. The seed step waits until the app is ready, sends 10,000 generated events from the last hour, and prints a throughput summary; the stats call then summarizes the last 24 hours. To send a single event yourself, see [`POST /v1/events/ingest`](#post-v1eventsingest).
 
 ### Run modes
 
 | Mode | Commands |
 |---|---|
 | Everything in Docker | `docker compose up --build -d` |
+| Seed it with generated events | `docker compose --profile seed run --rm seed` (10,000 events; see [Data generator](#data-generator) for options) |
 | App from source (database in Docker) | `docker compose up -d db redis`, then `./mvnw -pl mini-wsa-app spring-boot:run` (PowerShell: `.\mvnw.cmd -pl mini-wsa-app spring-boot:run`) |
 | Tests | `./mvnw verify` (PowerShell: `.\mvnw.cmd verify`); Docker must be running |
 
@@ -392,11 +393,73 @@ Swagger UI is coming at `/swagger-ui.html`.
 
 ## Data generator
 
-*Coming.*
+`mini-wsa-generator` is a separate command-line tool that produces realistic events and sends them to the ingest API, or writes them to files. It doesn't depend on the app's code: it is a black-box client of the HTTP API, with its own copy of the event format.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--count` | 10000 | Total events |
+| `--seed` | random, printed | The same seed reproduces exactly the same events (only the time range moves with the clock) |
+| `--span` | `60m` | Events are spread over this period, ending now (`30s`, `60m`, `2h`, `1d`) |
+| `--configs` | `14227,14228,20001` | `configId`s to spread events across |
+| `--wave-ratio` | 0.4 | Fraction of events that belong to attack waves |
+| `--target` | `http://localhost:8080` | API to POST to |
+| `--batch-size` | 500 | Events per request or file (at most 1000, the API's limit) |
+| `--concurrency` | 4 | Requests in flight at once |
+| `--wait-for-health` | off | Wait up to 90 s for the readiness probe before sending |
+| `--api-key` | env `MINIWSA_API_KEY`, else `dev-ingest-key` | Sent as `X-API-Key`; never printed |
+| `--out` | (send) | Write files to this directory instead of sending |
+| `--format` | `array` | With `--out`: `array` (each file can be POSTed as it is) or `ndjson` |
+
+**Running it**
+
+In Docker, against the compose stack: `docker compose --profile seed run --rm seed`. Extra options go after the service name, but they replace the default ones, so repeat the target: `docker compose --profile seed run --rm seed --target http://app:8080 --count 50000 --concurrency 8`.
+
+From source (bash; in PowerShell use `.\mvnw.cmd` and the same `java -jar` line):
+
+```bash
+./mvnw -pl mini-wsa-generator package
+java -jar mini-wsa-generator/target/mini-wsa-generator-0.0.1-SNAPSHOT.jar --count 10000 --wait-for-health
+java -jar mini-wsa-generator/target/mini-wsa-generator-0.0.1-SNAPSHOT.jar --count 2000 --out generated-events
+curl -X POST http://localhost:8080/v1/events/ingest -H "Content-Type: application/json" -H "X-API-Key: dev-ingest-key" --data-binary @generated-events/events-00001.json
+```
+
+`generated-events/` is git-ignored. Output of a run:
+
+```
+Run 7678c7c3, seed -3293938217697837018 (pass --seed -3293938217697837018 to reproduce the same events)
+17 attack waves:
+  SQLI_BURST            60 events  2026-11-18T13:13:56.919Z -> 2026-11-18T13:14:56.681Z  192.0.2.200 on /api/v1/search
+  CREDENTIAL_STUFFING  560 events  2026-11-18T13:07:27.031Z -> 2026-11-18T13:15:26.331Z  45 clients on /api/v1/login
+  SLOW_DOS             161 events  2026-11-18T12:52:53.204Z -> 2026-11-18T13:12:48.259Z  5 clients on /api/v1/export
+  ...
+Sending 10000 events to http://app:8080 in batches of 500, 4 at a time
+Batches:        20 (status: {201=20})
+Events stored:  10000 (duplicates reported: 0)
+Retries on 503: 0
+Elapsed:        1.29 s, 7725 events/s
+Batch latency:  p50 90 ms, p95 735 ms
+```
+
+The wave list says where each attack is, so it can be looked up with the samples API (for example `?from=…&to=…` around a burst). The exit code is non-zero if any batch wasn't stored.
+
+**What it generates**
+
+- **Background noise** (the remaining 60%): 300 clients with Zipf-like activity, so a few are very busy (the busiest produces about a sixth of the noise) and most appear rarely. Categories lean toward bots and protocol violations; severity follows the category (injections are mostly `CRITICAL`) and the action follows the severity (`CRITICAL` mostly `DENY`, `LOW` mostly `MONITOR`). Realistic hosts, paths with attack payloads, user agents (browsers, `curl`, `python-requests`, `sqlmap` for injections, fake Googlebots for bots), and a location that stays the same for each address.
+- **Attack waves**, generated in rotation until their share is filled:
+
+| Wave | Shape | What it should trigger |
+|---|---|---|
+| SQLi probe burst | One IP hits one path (`/api/v1/search` or `/api/v1/login`) 50–200 times in 1–3 minutes, with `sqlmap` | The repeat-offender bonus (scores of 90), a top attacker |
+| Credential stuffing | 20–50 IPs (a botnet) each try `/api/v1/login` 5–20 times over 5–10 minutes; `BOT` and `RATE_LIMIT` | `/api/v1/login` as the top targeted path |
+| Slow-rate DoS | 3–5 IPs at a steady, low rate for 15–30 minutes; `DOS` | Activity that stays under burst thresholds |
+
+- **Only documentation addresses** are generated: `192.0.2.0/24`, `198.51.100.0/24` and `203.0.113.0/24` (RFC 5737) and `2001:db8::/32` (RFC 3849). The generator can never produce a real person's IP.
+- **Live-feed order:** events are sent in chronological order, with ids `evt-<runId>-<seq>`, so repeated runs never collide. With several requests in flight, batches may arrive slightly out of order; the repeat-offender window works in event time, so that doesn't change any score.
+- **Backoff on `503`:** the service sheds load with `503` and stores nothing, so the batch is sent again up to 3 times, after 1 s, 2 s and 4 s, never waiting less than the server's `Retry-After`. Other errors aren't retried: a `400` won't succeed by repeating it.
 
 ## Running tests
 
-`./mvnw verify` (PowerShell: `.\mvnw.cmd verify`) runs unit tests (Surefire, `*Test`) and integration tests (Failsafe, `*IT`). Integration tests start the full application on a random port against TimescaleDB and Redis containers (Testcontainers), so Docker must be running. If containers can't be found, restart Docker Desktop. Integration tests log every HTTP exchange (method, path, status, bodies; never headers) under the name of the test that made it.
+`./mvnw verify` (PowerShell: `.\mvnw.cmd verify`) runs both modules' unit tests (Surefire, `*Test`) and integration tests (Failsafe, `*IT`). Integration tests start the full application on a random port against TimescaleDB and Redis containers (Testcontainers), so Docker must be running. If containers can't be found, restart Docker Desktop. Integration tests log every HTTP exchange (method, path, status, bodies; never headers) under the name of the test that made it.
 
 | Area | Covered by |
 |---|---|
@@ -418,6 +481,8 @@ Swagger UI is coming at `/swagger-ui.html`.
 | Samples: every field and its enrichment, omitted nulls, newest-first order with the `eventId` tie-break, paging and `total`, combined filters, defaults, rejected `limit`/`offset`, enum errors listing allowed values, roles | `SamplesIT` |
 | Stats and samples queries blocked past the timeout, and an exhausted pool, all return a fast 503 (forced with a table lock and held connections, not timing) | `DatabaseBackpressureIT` |
 | Hypertable migration; compression settings; duplicates, new events and stats on a compressed chunk | `MigrationIT`, `CompressionIT` |
+| Generator: the same seed gives identical events; every event passes the ingest rules and uses documentation addresses; background mix; wave shapes (a SQLi burst is ≥ 50 events from one IP to one path within 3 minutes), checked on 20 seeds each | `EventGeneratorTest`, `AttackWavesTest` |
+| Generator sending: JSON batches with the API key, `503` retries with exponential backoff and `Retry-After`, no retry on other errors, bounded concurrency, summary and exit code, file output (against a stub HTTP server) | `IngestClientTest`, `BatchSenderTest`, `GeneratorCommandTest` |
 
 ## Design decisions and assumptions
 
@@ -483,6 +548,7 @@ Implemented so far:
 - **Virtual threads** for every request, with concurrency bounded at the resources: a pool of 10 database connections. Waiting is cheap on a virtual thread, but the database isn't faster for it, so the pool is the real throttle.
 - **Backpressure instead of queueing.** A request that can't get a connection within 2 s gets `503` with `Retry-After`, as does a read query past its 5 s timeout. Load sheds quickly instead of building an ever-growing queue, and clients retry with backoff. Ingestion is idempotent, so the retry is safe.
 - **Stats queries run sequentially in one snapshot**, not in parallel (see the stats endpoint).
+- **First sample:** seeding 10,000 events into the Docker stack on a laptop (batches of 500, 4 in flight) took 1.1–1.3 s over three runs, about 7,700–8,850 events/s, with a p95 batch latency of 645–735 ms on a freshly started app. A later run of 50,000 events with 8 requests in flight, on the warmed-up app, reached about 29,000 events/s. Systematic measurements are coming.
 
 ## Design patterns
 
