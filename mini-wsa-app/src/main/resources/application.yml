@@ -44,6 +44,12 @@ server:
     include-message: never
 management:
   endpoints.web.exposure.include: health,info,metrics
-  # Health is public, so it lists each component's UP/DOWN only. Details (disk paths and sizes, database
-  # product) stay hidden.
-  endpoint.health.show-components: always
+  endpoint.health:
+    # Health is public, so it lists each component's UP/DOWN only. Details (disk paths and sizes, database
+    # product) stay hidden.
+    show-components: always
+    # /actuator/health/liveness and /actuator/health/readiness, for an orchestrator's probes. Redis is left out
+    # of readiness on purpose: ingestion fails open without it, so a Redis outage must not take every instance
+    # out of the load balancer. The overall /actuator/health still reports Redis.
+    probes.enabled: true
+    group.readiness.include: readinessState,db

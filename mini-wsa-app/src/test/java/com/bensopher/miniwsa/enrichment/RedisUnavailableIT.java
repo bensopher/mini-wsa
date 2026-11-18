@@ -118,6 +118,20 @@ class RedisUnavailableIT {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM security_events", Integer.class)).isEqualTo(1);
     }
 
+    @Test
+    @Order(4)
+    void withRedisDownTheInstanceStaysReadyWhileOverallHealthReportsIt() {
+        // Readiness is what a load balancer acts on. Ingestion works without Redis, so the instance stays in.
+        client.get().uri("/actuator/health/readiness").exchange()
+                .expectStatus().isOk()
+                .expectBody().jsonPath("$.status").isEqualTo("UP");
+        client.get().uri("/actuator/health").exchange()
+                .expectStatus().isEqualTo(503)
+                .expectBody()
+                .jsonPath("$.status").isEqualTo("DOWN")
+                .jsonPath("$.components.redis.status").isEqualTo("DOWN");
+    }
+
     private IngestResponse ingest(String body) {
         return client.post().uri("/v1/events/ingest")
                 .header("X-API-Key", "dev-ingest-key")

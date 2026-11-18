@@ -25,6 +25,20 @@ class SecurityIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void probesArePublicAndReadinessDependsOnTheDatabaseButNotRedis() {
+        anonymous().get().uri("/actuator/health/liveness").exchange()
+                .expectStatus().isOk()
+                .expectBody().jsonPath("$.status").isEqualTo("UP");
+        anonymous().get().uri("/actuator/health/readiness").exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.status").isEqualTo("UP")
+                .jsonPath("$.components.db.status").isEqualTo("UP")
+                .jsonPath("$.components.readinessState.status").isEqualTo("UP")
+                .jsonPath("$.components.redis").doesNotExist();
+    }
+
+    @Test
     void missingKeyIs401Problem() {
         anonymous().get().uri("/actuator/metrics").exchange()
                 .expectStatus().isUnauthorized()
