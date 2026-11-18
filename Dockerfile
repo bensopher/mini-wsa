@@ -6,8 +6,10 @@ WORKDIR /src
 # POMs first: the dependency layer is cached until a POM changes.
 COPY pom.xml .
 COPY mini-wsa-app/pom.xml mini-wsa-app/
+COPY mini-wsa-generator/pom.xml mini-wsa-generator/
 RUN mvn -B -q dependency:go-offline
 COPY mini-wsa-app/src mini-wsa-app/src
+COPY mini-wsa-generator/src mini-wsa-generator/src
 RUN mvn -B -q -DskipTests package
 
 FROM eclipse-temurin:21-jre AS app
