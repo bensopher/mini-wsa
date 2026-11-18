@@ -1,16 +1,20 @@
 package com.bensopher.miniwsa.common.error;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.mock.http.MockHttpInputMessage;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.context.request.ServletWebRequest;
 
 import java.net.URI;
+import java.sql.SQLTransientConnectionException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,6 +62,36 @@ class GlobalExceptionHandlerTest {
                 .startsWith("An unexpected error occurred. Reference: ");
         assertThat(problem.getProperties()).containsKey("errorId");
         assertThat(problem.getDetail()).endsWith((String) problem.getProperties().get("errorId"));
+    }
+
+    @Test
+    void aQueryTimeoutBecomesA503WithRetryAfter() {
+        ResponseEntity<ProblemDetail> response = handler.handleQueryTimeout(
+                new QueryTimeoutException("canceling statement due to user request"), request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("5");
+        assertThat(response.getBody().getType()).isEqualTo(ProblemTypes.SERVICE_UNAVAILABLE);
+        assertThat(response.getBody().getDetail())
+                .isEqualTo("The query took too long and was cancelled. Narrow the time range or try again later.");
+    }
+
+    @Test
+    void noDatabaseConnectionBecomesA503WithRetryAfterWithOrWithoutATransaction() {
+        SQLTransientConnectionException poolTimeout = new SQLTransientConnectionException(
+                "HikariPool-1 - Connection is not available, request timed out after 2001ms");
+
+        for (Exception ex : new Exception[] {
+                new CannotCreateTransactionException("Could not open JDBC Connection for transaction", poolTimeout),
+                new CannotGetJdbcConnectionException("Failed to obtain JDBC Connection", poolTimeout)}) {
+            ResponseEntity<ProblemDetail> response = handler.handleNoConnection(ex, request);
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("5");
+            assertThat(response.getBody().getType()).isEqualTo(ProblemTypes.SERVICE_UNAVAILABLE);
+            assertThat(response.getBody().getDetail())
+                    .isEqualTo("The service is temporarily overloaded. Try again shortly.");
+        }
     }
 
     @Test

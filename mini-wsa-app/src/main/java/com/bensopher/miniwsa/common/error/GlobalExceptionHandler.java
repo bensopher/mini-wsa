@@ -4,15 +4,18 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.TypeMismatchException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.ServletWebRequest;
@@ -31,6 +34,9 @@ import java.util.UUID;
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /** A hint for well-behaved clients to back off rather than retry immediately. */
+    static final String RETRY_AFTER_SECONDS = "5";
 
     @ExceptionHandler(RequestValidationException.class)
     ProblemDetail handleValidation(RequestValidationException ex, HttpServletRequest request) {
@@ -59,6 +65,27 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     ProblemDetail handleForbidden(AccessDeniedException ex, HttpServletRequest request) {
         return problem(HttpStatus.FORBIDDEN, ProblemTypes.FORBIDDEN, "Forbidden",
                 "This API key does not have the role required for this endpoint", request);
+    }
+
+    /** A read query ran past the read-query timeout and the driver cancelled it. */
+    @ExceptionHandler(QueryTimeoutException.class)
+    ResponseEntity<ProblemDetail> handleQueryTimeout(QueryTimeoutException ex, HttpServletRequest request) {
+        log.warn("Query timed out on {} {}", request.getMethod(), request.getRequestURI());
+        return serviceUnavailable(
+                "The query took too long and was cancelled. Narrow the time range or try again later.", request);
+    }
+
+    /**
+     * No database connection within the pool's 2s wait: the pool is exhausted or the database is unreachable.
+     * Failing fast with a 503 is the backpressure: requests don't queue up without bound, and clients retry
+     * later. Inside a transaction the error surfaces as CannotCreateTransactionException.
+     */
+    @ExceptionHandler({CannotGetJdbcConnectionException.class, CannotCreateTransactionException.class})
+    ResponseEntity<ProblemDetail> handleNoConnection(Exception ex, HttpServletRequest request) {
+        Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+        log.warn("No database connection for {} {}: {}", request.getMethod(), request.getRequestURI(),
+                cause.getMessage());
+        return serviceUnavailable("The service is temporarily overloaded. Try again shortly.", request);
     }
 
     /** Anything unexpected: a generic body (no exception text leaks), full details in the log under an id. */
@@ -111,6 +138,13 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             }
         }
         return null;
+    }
+
+    private static ResponseEntity<ProblemDetail> serviceUnavailable(String detail, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS)
+                .body(problem(HttpStatus.SERVICE_UNAVAILABLE, ProblemTypes.SERVICE_UNAVAILABLE, "Service unavailable",
+                        detail, request));
     }
 
     private static ProblemDetail problem(HttpStatus status, URI type, String title, String detail,

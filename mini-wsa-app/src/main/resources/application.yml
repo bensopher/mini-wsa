@@ -39,6 +39,7 @@ miniwsa:
       - { name: soc-admin,   key: "${MINIWSA_ADMIN_KEY:dev-admin-key}",   roles: [READ, ADMIN] }
   limits:
     max-request-body: 5MB
+    read-query-timeout: 5s   # per statement; a timeout becomes a 503
     json: { max-nesting-depth: 20, max-string-length: 65536 }
 server:
   # Container-level errors (outside Spring MVC) must not leak exception text or stack traces either.

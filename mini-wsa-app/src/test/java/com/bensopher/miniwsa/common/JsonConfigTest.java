@@ -8,6 +8,8 @@ import tools.jackson.core.json.JsonFactoryBuilder;
 import tools.jackson.databind.exc.MismatchedInputException;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -17,7 +19,7 @@ class JsonConfigTest {
     }
 
     private final JsonMapper mapper = hardenedMapper(new LimitsProperties(DataSize.ofMegabytes(5),
-            new LimitsProperties.Json(5, 100)));
+            new LimitsProperties.Json(5, 100), Duration.ofSeconds(5)));
 
     @Test
     void acceptsProperlyTypedNumbers() {

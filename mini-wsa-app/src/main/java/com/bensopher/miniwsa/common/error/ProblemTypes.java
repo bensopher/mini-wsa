@@ -12,6 +12,7 @@ public final class ProblemTypes {
     public static final URI PAYLOAD_TOO_LARGE = URI.create(BASE + "payload-too-large");
     public static final URI UNAUTHORIZED = URI.create(BASE + "unauthorized");
     public static final URI FORBIDDEN = URI.create(BASE + "forbidden");
+    public static final URI SERVICE_UNAVAILABLE = URI.create(BASE + "service-unavailable");
     public static final URI INTERNAL = URI.create(BASE + "internal");
 
     private ProblemTypes() {
