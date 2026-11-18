@@ -3,6 +3,7 @@ package com.bensopher.miniwsa.common.error;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.TypeMismatchException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -14,10 +15,12 @@ import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import java.net.URI;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -87,6 +90,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setType(ProblemTypes.MALFORMED_JSON);
         problem.setTitle("Malformed JSON");
         return ResponseEntity.badRequest().body(problem);
+    }
+
+    /** A query parameter that can't be converted, such as {@code configId=abc}: a 400 in the validation format. */
+    @Override
+    protected ResponseEntity<Object> handleTypeMismatch(TypeMismatchException ex, HttpHeaders headers,
+            HttpStatusCode status, WebRequest request) {
+        Class<?> type = ex.getRequiredType();
+        String message = type == Long.class || type == Integer.class ? "must be an integer" : "has an invalid value";
+        RequestValidationException validation = new RequestValidationException("Invalid query parameters",
+                List.of(new FieldViolation(null, ex.getPropertyName(), message, ex.getValue())));
+        return ResponseEntity.badRequest()
+                .body(handleValidation(validation, ((ServletWebRequest) request).getRequest()));
     }
 
     private static <T extends Throwable> T findCause(Throwable ex, Class<T> type) {

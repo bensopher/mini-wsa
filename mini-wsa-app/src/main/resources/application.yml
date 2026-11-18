@@ -28,6 +28,9 @@ miniwsa:
     sensitive-path: { patterns: [/admin, /login], bonus: 15 }   # A7
     # A5/A6: window in event time. Retention = window + allowed lateness; idle IP keys expire after key-ttl.
     repeat-offender: { threshold: 5, bonus: 15, window: 10m, retention: 1h, key-ttl: 2h }
+  query:
+    default-range: 24h   # A8
+    max-range: 90d       # bounds how much data one query can scan
   security:
     # Dev defaults only (documented in the README); real deployments inject keys from a secrets manager via env.
     api-keys:

@@ -12,7 +12,7 @@ import java.util.List;
  * Builds a WHERE clause from only the filters actually supplied:
  * <pre>{@code
  * SqlFilter filter = SqlFilter.timeRange(range).eq(FilterColumn.CONFIG_ID, configId);
- * jdbc.query("SELECT ... FROM security_events " + filter.where() + " GROUP BY ...", filter.params(), mapper);
+ * jdbc.query("SELECT ... FROM security_events %s GROUP BY ...".formatted(filter.where()), filter.params(), mapper);
  * }</pre>
  * Deliberately not {@code (:configId IS NULL OR config_id = :configId)}: Postgres plans that once for both
  * cases, so it can't use the {@code (config_id, event_time)} index for either. Every value is a bind

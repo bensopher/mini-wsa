@@ -40,6 +40,7 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/v1/events/ingest").hasRole(Role.INGEST.name())
+                        .requestMatchers(HttpMethod.GET, "/v1/stats/**").hasRole(Role.READ.name())
                         .requestMatchers("/actuator/info", "/actuator/metrics/**").hasRole(Role.ADMIN.name())
                         .anyRequest().denyAll())
                 .build();
