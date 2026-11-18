@@ -26,6 +26,14 @@ class TimeRangeTest {
     }
 
     @Test
+    void theDefaultEndIsNowToTheMillisecond() {
+        Instant preciseNow = Instant.parse("2026-11-18T10:15:30.123456789Z");
+
+        assertThat(TimeRange.resolve(null, null, preciseNow, DEFAULT, MAX))
+                .isEqualTo(new TimeRange(Instant.parse("2026-11-17T10:15:30.123Z"), NOW));
+    }
+
+    @Test
     void withOnlyFromItRunsUntilNow() {
         assertThat(resolve("2026-11-01T00:00:00Z", null))
                 .isEqualTo(new TimeRange(Instant.parse("2026-11-01T00:00:00Z"), NOW));

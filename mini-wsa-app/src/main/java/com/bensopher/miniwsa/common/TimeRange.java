@@ -28,7 +28,9 @@ public record TimeRange(Instant from, Instant to) {
         if (!violations.isEmpty()) {
             throw invalid(violations);
         }
-        Instant end = parsedTo != null ? parsedTo : now;
+        // The default end is echoed in the response, so it gets the same millisecond precision as receivedAt
+        // rather than the system clock's nanoseconds.
+        Instant end = parsedTo != null ? parsedTo : now.truncatedTo(ChronoUnit.MILLIS);
         Instant start = parsedFrom != null ? parsedFrom : end.minus(defaultRange);
         if (!start.isBefore(end)) {
             throw invalid(List.of(new FieldViolation(null, "from", "must be before 'to'", from)));
