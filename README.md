@@ -491,7 +491,7 @@ Every endpoint, with parameters, schemas and examples, is also in [Swagger UI](h
 
 **Running it**
 
-In Docker, against the compose stack: `docker compose --profile seed run --rm seed`. Extra options go after the service name, but they replace the default ones, so repeat the target: `docker compose --profile seed run --rm seed --target http://app:8080 --count 50000 --concurrency 8`.
+In Docker, against the compose stack: `docker compose --profile seed run --rm seed`. Extra options go after the service name, but they replace the default ones, so repeat the target (and `--wait-for-health` if the app may still be starting): `docker compose --profile seed run --rm seed --target http://app:8080 --wait-for-health --count 50000 --concurrency 8`.
 
 From source (bash; in PowerShell use `.\mvnw.cmd` and the same `java -jar` line):
 
@@ -631,36 +631,99 @@ Implemented so far:
 - CSRF protection is off because there are no cookies or browser sessions; CORS is not enabled because there are no browser clients.
 - The container runs as a non-root user; image tags are pinned; Dependabot watches Maven and Docker dependencies.
 
-*Coming:* the full threat model and production recommendations.
+**Threat model.** Ingest callers are machine clients (edge log shippers); readers are dashboards and analysts. The data includes client IPs and attack payloads, which are sensitive.
+
+| Threat | Mitigation |
+|---|---|
+| Unauthorized reads of security data | API keys with roles; every endpoint has an explicit rule and anything unlisted is denied |
+| Data poisoning (fake events skewing scores and stats) | A separate `INGEST` role: ingest keys can't read, read keys can't ingest |
+| Resource exhaustion through huge or abusive requests | Body, batch, JSON nesting and string limits; range, page and offset limits; read-query timeout; a bounded connection pool that fails fast with `503` |
+| Injection (SQL, Lua, logs) | Bind parameters only; filter columns from an enum; Lua receives event data as arguments, never as script text; payloads are never logged |
+| Information leakage | Generic 500s with an error id; no stack traces or exception messages; actuator restricted to `ADMIN` except health, which shows component status only; keys never logged or echoed |
+| Header spoofing | `X-Forwarded-For` is not used: the client IP in logs is the connection's address |
+| Supply chain and secrets | Pinned images, Dependabot, no secrets in code (dev defaults only, overridable by environment), non-root containers |
+
+**In production I would add:** TLS terminated at the load balancer (out of scope locally); mTLS between the edge and ingestion; OAuth2 client credentials for dashboards; keys from a secrets manager with rotation; keys scoped to the `configId`s a client may see (tenant isolation); health details only for authorized callers; and rate limiting on the read endpoints.
 
 ## Performance and concurrency
 
-*Coming:* measured numbers. The model so far:
+**The model:**
 
 - **Virtual threads** for every request, with concurrency bounded at the resources: a pool of 10 database connections. Waiting is cheap on a virtual thread, but the database isn't faster for it, so the pool is the real throttle.
 - **Backpressure instead of queueing.** A request that can't get a connection within 2 s gets `503` with `Retry-After`, as does a read query past its 5 s timeout. Load sheds quickly instead of building an ever-growing queue, and clients retry with backoff. Ingestion is idempotent, so the retry is safe.
 - **Stats queries run sequentially in one snapshot**, not in parallel (see the stats endpoint).
-- **First sample:** seeding 10,000 events into the Docker stack on a laptop (batches of 500, 4 in flight) took 1.1–1.3 s over three runs, about 7,700–8,850 events/s, with a p95 batch latency of 645–735 ms on a freshly started app. A later run of 50,000 events with 8 requests in flight, on the warmed-up app, reached about 29,000 events/s. Systematic measurements are coming.
+- **Ingestion is synchronous on purpose:** `201` means committed. An in-memory queue would lose acknowledged events on a crash; the right asynchronous boundary is a durable log (Kafka), as in the [at-scale design](#storage-choice).
+- **No virtual-thread pinning:** the benchmark ran with `-Djdk.tracePinnedThreads=short` and logged no pinned threads over about 1,000,000 ingested events.
+
+**Measured** on a desktop, not a benchmark rig: AMD Ryzen 7 9800X3D (8 cores), 31 GB RAM, NVMe SSD, Windows 11 with Docker Desktop (8 CPUs and 15 GB for containers). The generator ran as the `seed` container on the compose network, with a warmed-up app. Numbers are from single runs.
+
+*Ingestion*: 100,000 events per run; events/s and p95 batch latency. The table grew from 0 to 900,000 rows across the runs.
+
+| Batch size | 1 in flight | 4 in flight | 8 in flight |
+|---|---|---|---|
+| 100 | 9,478/s · 12 ms | 22,569/s · 25 ms | 26,569/s · 44 ms |
+| 500 | 16,443/s · 34 ms | 35,014/s · 80 ms | 44,278/s · 139 ms |
+| 1000 | 20,008/s · 55 ms | 45,313/s · 127 ms | 61,238/s · 186 ms |
+
+*Reads*: 20 calls each from the host with `curl`; p50 / p95 in ms. Every event was inside the default 24-hour range.
+
+| Request | ~100,000 events | ~900,000 events |
+|---|---|---|
+| Stats summary, all configs | 74 / 85 | 835 / 925 |
+| Stats summary, one config | 34 / 36 | 348 / 366 |
+| Samples, first page | 13 / 16 | 49 / 50 |
+| Samples, `category=INJECTION&action=DENY` | 14 / 37 | 169 / 191 |
+| Samples, `offset=5000` | 11 / 11 | 52 / 57 |
+
+**What the numbers say:**
+
+- **Ingestion scales with batch size and concurrency.** Small batches are dominated by per-request costs (HTTP, authentication, one Redis round trip, one transaction), so 1,000-event batches carry about twice the events per second of 100-event ones. During a 1000×8 run the app used about 3 CPUs (JSON parsing and validation), Postgres about 1–1.5, and Redis about 0.85 of the single core it can use. No request ever waited for a database connection: no `503`s, and the pool's pending count stayed at 0. The next limits are Redis, which also opens a new connection per ingest request today, and app CPU, which scales out with more instances, since all state is in Postgres and Redis.
+- **Reads cost grows with the events in the range.** The stats summary and the samples `total` scan every matching row, so nine times the data made the summary about eleven times slower: 835 ms at 900,000 events is acceptable for a dashboard, but this is where continuous aggregates (for stats) and an approximate or capped total (for samples) would come in. Filtering by one config cuts the summary to less than half (348 ms), thanks to the `(config_id, event_time)` index.
+- **One cold run for comparison:** the first 500×4 run after startup, before the JVM had warmed up, managed 24,969/s, against 35,014/s once warm.
+
+To reproduce one cell: `docker compose --profile seed run --rm seed --target http://app:8080 --wait-for-health --count 100000 --batch-size 1000 --concurrency 8 --seed 42`.
 
 ## Design patterns
 
-*Coming.*
+Used only where they pay off:
+
+| Pattern | Where | Why it's there |
+|---|---|---|
+| Strategy | `ScoreRule` implementations | Each scoring rule is isolated and unit-tested; a new rule is a new class |
+| Composite | `ThreatScoreCalculator` over every `ScoreRule` bean | Spring injects all rules; the calculator only sums and caps |
+| Port / Adapter | `RepeatOffenderTracker` → `RedisRepeatOffenderTracker`; repositories as the only SQL | Infrastructure can change (an in-memory tracker in tests, another store) without touching business logic |
+| Builder | `SqlFilter` | Safe, readable dynamic WHERE clauses with whitelisted columns |
+| Chain of Responsibility | Servlet filters: body limit → API-key authentication → authorization | Each cross-cutting concern is independent and explicitly ordered |
+| Template Method | `AbstractIntegrationTest` | Shared containers, clock, cleanup and per-role clients for every integration test |
+| Value Object | Records for domain types and DTOs | Immutable, so safe to share between virtual threads |
+| Configuration over code | Weights on the enums, thresholds in `miniwsa.*` | Changing a weight, window or threshold is a one-line change |
+
+Deliberately not used: factories or abstract services with a single implementation, an event bus, or CQRS frameworks. Each would add indirection without a payoff at this size.
 
 ## What I'd improve with more time
-
-*Coming:* the full list. So far:
 
 - **A retention policy** (for example, drop chunks older than a year), once it is agreed how long events must be kept. It is left out so that historical data can't silently disappear.
 - **Keyset (cursor) pagination for samples**, continuing from the last `(timestamp, eventId)` seen instead of an offset. Each page then costs the same however deep it is, and the offset cap goes away.
 - **An approximate or capped `total`** for samples at scale: an exact `count(*)` over a large range reads every matching row.
 - **One time budget for the whole stats summary.** Each of its four queries has its own 5 s timeout, so a summary can take up to 20 s in the worst case; a transaction-level deadline would bound the request as a whole.
+- **Kafka in front, keyed by client IP, with stateful stream enrichment.** It removes the Redis-before-Postgres write (a failed insert can leave Redis counting an event that was never stored), lets ingestion acknowledge after a durable write to the log, and keeps each IP's window in one consumer.
+- **A columnar OLAP store at scale** (ClickHouse, Druid or Pinot), with continuous aggregates or rollups in the meantime, so stats stop scanning raw events.
+- **Redis connection pooling** for the repeat-offender pipeline: each ingest request opens a new connection today, and Redis was the closest component to saturation in the benchmark.
+- **Short-TTL response caching** for dashboards that poll the same summary.
+- **A per-event score breakdown** (which rules added how much), for explainability.
+- **Partial-success batches** (`207` with per-event results) as an opt-in alternative to all-or-nothing.
+- **Duplicate detection by `eventId` alone**, if producers guarantee globally unique ids; today an id is unique per timestamp, because a hypertable's unique key must include the time column.
+- **Tenant isolation:** API keys scoped to `configId`s, mTLS from the edge, OAuth2 for dashboards, key rotation.
+- **Server-side GeoIP enrichment** instead of trusting the location the client sends.
+- **Schema versioning** of the event contract.
+- **CI** (GitHub Actions running `./mvnw verify`), **dependency scanning** (OWASP), and **load tests** (Gatling or k6) with explicit latency targets.
 
 ## Challenges and how I solved them
 
-*Coming.*
+*Placeholder: written by the author before submission.*
 
 ## Development process
 
 - Small commits in [Conventional Commits](https://www.conventionalcommits.org/) format; every commit builds and passes `./mvnw verify`, with tests in the same commit as the code they cover.
-- One annotated tag per milestone: `v0.1-ingestion`, `v0.2-enrichment`, `v0.3-stats`, `v0.4-samples`, `v0.5-generator`, then the bonuses `v0.6-timeseries`, `v0.7-rate-limiting`, `v0.8-alerting`, and `v1.0.0`.
+- One annotated tag per milestone: `v0.1-ingestion`, `v0.2-enrichment`, `v0.3-stats`, `v0.4-samples`, `v0.5-generator`, and `v1.0.0` (every core requirement, documented and measured). The bonus features follow as `v1.1.0-timeseries`, `v1.2.0-rate-limiting` and `v1.3.0-alerting`.
 - AI-assisted tooling (Claude Code) was used during development, as the assignment allows. All code was reviewed and is understood by the author.
