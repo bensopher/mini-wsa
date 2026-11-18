@@ -39,6 +39,9 @@ public class SecurityConfig {
                         // container-level 400/404/413 would be masked as a 401/403.
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health/**").permitAll()
+                        // The API description is public; every endpoint it describes still needs a key.
+                        .requestMatchers(HttpMethod.GET, "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**")
+                        .permitAll()
                         .requestMatchers(HttpMethod.POST, "/v1/events/ingest").hasRole(Role.INGEST.name())
                         .requestMatchers(HttpMethod.GET, "/v1/stats/**", "/v1/events/samples")
                         .hasRole(Role.READ.name())
