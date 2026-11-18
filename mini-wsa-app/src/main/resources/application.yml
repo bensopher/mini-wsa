@@ -50,6 +50,7 @@ server:
     include-message: never
 management:
   endpoints.web.exposure.include: health,info,metrics
+  observations.annotations.enabled: true   # turns @Timed on the service methods into timers
   endpoint.health:
     # Health is public, so it lists each component's UP/DOWN only. Details (disk paths and sizes, database
     # product) stay hidden.

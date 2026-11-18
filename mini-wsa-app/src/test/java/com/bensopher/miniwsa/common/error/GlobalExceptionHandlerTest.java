@@ -1,5 +1,6 @@
 package com.bensopher.miniwsa.common.error;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.http.HttpHeaders;
@@ -21,7 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class GlobalExceptionHandlerTest {
 
-    private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+    private final GlobalExceptionHandler handler = new GlobalExceptionHandler(meterRegistry);
     private final MockHttpServletRequest request = new MockHttpServletRequest("POST", "/v1/events/ingest");
 
     @Test

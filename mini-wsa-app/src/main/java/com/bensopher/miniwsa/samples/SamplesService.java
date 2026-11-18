@@ -8,6 +8,7 @@ import com.bensopher.miniwsa.common.error.FieldViolation;
 import com.bensopher.miniwsa.common.error.RequestValidationException;
 import com.bensopher.miniwsa.event.Action;
 import com.bensopher.miniwsa.event.Category;
+import io.micrometer.core.annotation.Timed;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -32,6 +33,7 @@ public class SamplesService {
      * Out-of-range limits are rejected rather than silently clamped, so a client never gets fewer items than it
      * asked for without knowing why.
      */
+    @Timed(value = "miniwsa.samples.duration", description = "Time to read one page of samples")
     public SamplesPage samples(Long configId, String from, String to, Category category, Action action,
             Integer limit, Integer offset) {
         QueryProperties.Samples paging = query.samples();

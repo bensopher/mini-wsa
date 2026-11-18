@@ -6,6 +6,10 @@ import com.bensopher.miniwsa.enrichment.EnrichmentService;
 import com.bensopher.miniwsa.event.EnrichedEvent;
 import com.bensopher.miniwsa.event.SecurityEvent;
 import com.bensopher.miniwsa.ingest.IngestResponse.IngestedEvent;
+import io.micrometer.core.annotation.Timed;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -36,17 +40,27 @@ public class IngestService {
     private final JdbcEventWriteRepository repository;
     private final IngestProperties properties;
     private final Clock clock;
+    private final MeterRegistry meterRegistry;
+    private final Counter duplicates;
+    private final DistributionSummary batchSize;
+    private final DistributionSummary threatScore;
 
     public IngestService(EventPayloadParser parser, EnrichmentService enrichment, JdbcEventWriteRepository repository,
-            IngestProperties properties, Clock clock) {
+            IngestProperties properties, Clock clock, MeterRegistry meterRegistry) {
         this.parser = parser;
         this.enrichment = enrichment;
         this.repository = repository;
         this.properties = properties;
         this.clock = clock;
+        this.meterRegistry = meterRegistry;
+        this.duplicates = meterRegistry.counter("miniwsa.events.duplicates");
+        this.batchSize = DistributionSummary.builder("miniwsa.ingest.batch.size").baseUnit("events")
+                .register(meterRegistry);
+        this.threatScore = DistributionSummary.builder("miniwsa.events.threat_score").register(meterRegistry);
     }
 
     /** @param body one event object, or an array of events */
+    @Timed(value = "miniwsa.ingest.duration", description = "Time to validate, enrich and store one ingest request")
     public IngestResponse ingest(JsonNode body) {
         long started = System.nanoTime();
         boolean batch = body.isArray();
@@ -80,10 +94,24 @@ public class IngestService {
         }
         IngestResponse response = new IngestResponse(events.size(), stored.size(), events.size() - stored.size(),
                 receivedAt, results);
+        recordMetrics(response, enriched, stored);
         // Counts only: events are attacker-controlled and may hold sensitive data, so payloads are never logged.
         log.info("Ingested request: received={} stored={} duplicates={} durationMs={}", response.received(),
                 response.stored(), response.duplicates(), (System.nanoTime() - started) / 1_000_000);
         return response;
+    }
+
+    /** Stored events are counted by category, with their scores; duplicates only as a count. */
+    private void recordMetrics(IngestResponse response, List<EnrichedEvent> enriched, Set<EventKey> stored) {
+        batchSize.record(response.received());
+        duplicates.increment(response.duplicates());
+        for (EnrichedEvent event : enriched) {
+            if (stored.contains(EventKey.of(event.event()))) {
+                meterRegistry.counter("miniwsa.events.ingested", "category", event.event().rule().category().name())
+                        .increment();
+                threatScore.record(event.threatScore());
+            }
+        }
     }
 
     private List<JsonNode> elements(JsonNode body) {

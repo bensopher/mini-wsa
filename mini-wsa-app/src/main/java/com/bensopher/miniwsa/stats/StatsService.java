@@ -5,6 +5,7 @@ import com.bensopher.miniwsa.common.QueryProperties;
 import com.bensopher.miniwsa.common.SqlFilter;
 import com.bensopher.miniwsa.common.TimeRange;
 import com.bensopher.miniwsa.event.Action;
+import io.micrometer.core.annotation.Timed;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -25,6 +26,7 @@ public class StatsService {
     }
 
     /** Validates the parameters before the repository opens a transaction, so a bad request costs no connection. */
+    @Timed(value = "miniwsa.stats.duration", description = "Time to build one stats summary")
     public StatsSummary summary(Long configId, String from, String to) {
         TimeRange range = TimeRange.resolve(from, to, clock.instant(), query.defaultRange(), query.maxRange());
         StatsRepository.Sections sections =

@@ -1,5 +1,6 @@
 package com.bensopher.miniwsa.common.error;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,8 +40,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     /** A hint for well-behaved clients to back off rather than retry immediately. */
     static final String RETRY_AFTER_SECONDS = "5";
 
+    private static final String INGEST_PATH = "/v1/events/ingest";
+
+    private final MeterRegistry meterRegistry;
+
+    public GlobalExceptionHandler(MeterRegistry meterRegistry) {
+        this.meterRegistry = meterRegistry;
+    }
+
     @ExceptionHandler(RequestValidationException.class)
     ProblemDetail handleValidation(RequestValidationException ex, HttpServletRequest request) {
+        countIngestRejection(request, "validation");
         ProblemDetail problem = problem(HttpStatus.BAD_REQUEST, ProblemTypes.VALIDATION, "Validation failed",
                 ex.getMessage(), request);
         problem.setProperty("errors", ex.violations());
@@ -49,6 +59,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     @ExceptionHandler(PayloadTooLargeException.class)
     ProblemDetail handlePayloadTooLarge(PayloadTooLargeException ex, HttpServletRequest request) {
+        countIngestRejection(request, "too_large");
         return problem(HttpStatus.CONTENT_TOO_LARGE, ProblemTypes.PAYLOAD_TOO_LARGE, "Payload too large",
                 ex.getMessage(), request);
     }
@@ -106,13 +117,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             HttpHeaders headers, HttpStatusCode status, WebRequest request) {
         // A chunked body that crosses the size limit fails while the parser is reading it, so the limit
         // error arrives wrapped in the parser's exception.
+        HttpServletRequest servletRequest = ((ServletWebRequest) request).getRequest();
         PayloadTooLargeException tooLarge = findCause(ex, PayloadTooLargeException.class);
         if (tooLarge != null) {
+            countIngestRejection(servletRequest, "too_large");
             ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONTENT_TOO_LARGE, tooLarge.getMessage());
             problem.setType(ProblemTypes.PAYLOAD_TOO_LARGE);
             problem.setTitle("Payload too large");
             return ResponseEntity.status(HttpStatus.CONTENT_TOO_LARGE).body(problem);
         }
+        countIngestRejection(servletRequest, "malformed");
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
                 "The request body is missing or is not valid JSON");
         problem.setType(ProblemTypes.MALFORMED_JSON);
@@ -140,6 +154,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 List.of(new FieldViolation(null, ex.getPropertyName(), message, ex.getValue())));
         return ResponseEntity.badRequest()
                 .body(handleValidation(validation, ((ServletWebRequest) request).getRequest()));
+    }
+
+    /**
+     * Counts rejected ingest requests by reason ({@code miniwsa.ingest.rejected}). Read endpoints raise the same
+     * validation errors for bad query parameters, but those aren't rejected events, so only ingest is counted.
+     */
+    private void countIngestRejection(HttpServletRequest request, String reason) {
+        if (INGEST_PATH.equals(request.getRequestURI())) {
+            meterRegistry.counter("miniwsa.ingest.rejected", "reason", reason).increment();
+        }
     }
 
     private static <T extends Throwable> T findCause(Throwable ex, Class<T> type) {
