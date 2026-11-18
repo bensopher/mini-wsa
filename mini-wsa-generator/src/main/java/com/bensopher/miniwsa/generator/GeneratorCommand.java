@@ -103,8 +103,8 @@ public class GeneratorCommand implements Callable<Integer> {
         JsonMapper json = JsonMapper.builder().build();
         if (out != null) {
             List<Path> files = new EventFiles(json).write(batches(run.events()), out, format);
-            console.printf("Wrote %d events to %d files in %s%n", run.events().size(), files.size(),
-                    out.toAbsolutePath());
+            console.printf("Wrote %d events to %d %s in %s%n", run.events().size(), files.size(),
+                    files.size() == 1 ? "file" : "files", out.toAbsolutePath());
             return 0;
         }
 

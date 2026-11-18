@@ -39,6 +39,7 @@ class GeneratorCommandTest {
     void writesOneEventPerLineAsNdjson(@TempDir Path dir) throws Exception {
         run("--count", "10", "--format", "ndjson", "--out", dir.toString());
 
+        assertThat(out.toString()).contains("Wrote 10 events to 1 file in");
         List<String> lines = Files.readAllLines(dir.resolve("events-00001.ndjson"));
         assertThat(lines).hasSize(10).allSatisfy(line -> assertThat(json.readTree(line).isObject()).isTrue());
     }
