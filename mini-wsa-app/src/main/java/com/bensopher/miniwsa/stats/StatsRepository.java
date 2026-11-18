@@ -87,16 +87,20 @@ public class StatsRepository {
                 (rs, row) -> new AttackerStats(rs.getString("ip"), rs.getLong("events"), average(rs)));
     }
 
+    /**
+     * Ranks endpoints, not URLs: the query string is dropped, so /search?q=shoes and /search?q=<script> both
+     * count toward /search. Otherwise every distinct attack payload would be its own entry.
+     */
     private List<PathStats> topTargetedPaths(SqlFilter filter) {
         return jdbc.query("""
-                SELECT path, count(*) AS events
+                SELECT split_part(path, '?', 1) AS endpoint, count(*) AS events
                 FROM security_events
                 %s
-                GROUP BY path
-                ORDER BY events DESC, path
+                GROUP BY endpoint
+                ORDER BY events DESC, endpoint
                 LIMIT %d
                 """.formatted(filter.where(), TOP_N), filter.params(),
-                (rs, row) -> new PathStats(rs.getString("path"), rs.getLong("events")));
+                (rs, row) -> new PathStats(rs.getString("endpoint"), rs.getLong("events")));
     }
 
     /** avg() ignores NULL scores (rows stored before scoring existed), and is NULL if every score is. */

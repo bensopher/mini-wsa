@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -141,6 +142,22 @@ class StatsIT extends AbstractIntegrationTest {
                         "10.0.0.8", "10.0.0.9"))
                 .jsonPath("$.topTargetedPaths[*].path").isEqualTo(List.of("/p12",
                         "/p01", "/p02", "/p03", "/p04", "/p05", "/p06", "/p07", "/p08", "/p09"));
+    }
+
+    @Test
+    void topPathsGroupUrlsByEndpointIgnoringTheQueryString() {
+        Instant t = Instant.parse("2026-05-20T12:00:00Z");
+        insertEvent("a", t, 1, "192.0.2.1", "/search?q=shoes", "BOT", "MONITOR", 10);
+        insertEvent("b", t.plusSeconds(1), 1, "192.0.2.1", "/search?q=%3Cscript%3E", "XSS", "DENY", 50);
+        insertEvent("c", t.plusSeconds(2), 1, "192.0.2.1", "/search", "BOT", "MONITOR", 10);
+        insertEvent("d", t.plusSeconds(3), 1, "192.0.2.1", "/login", "BOT", "MONITOR", 10);
+
+        asReader().get().uri("/v1/stats/summary?" + MAY_20).exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.topTargetedPaths").isEqualTo(List.of(
+                        Map.of("path", "/search", "count", 3),
+                        Map.of("path", "/login", "count", 1)));
     }
 
     @Test

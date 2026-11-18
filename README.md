@@ -269,7 +269,7 @@ The range may be at most 90 days, which bounds how much data one request can sca
 | `byCategory` | Count and average threat score (1 decimal) per category, by count descending. Only categories with events appear: an average over zero events is undefined |
 | `byAction` | Count per action; all three actions always appear, with 0 when absent |
 | `topAttackers` | Top 10 client IPs by count, with their average threat score; ties broken by address |
-| `topTargetedPaths` | Top 10 paths by count; ties broken by path |
+| `topTargetedPaths` | Top 10 endpoints by count: the path without its query string, so `/search?q=a` and `/search?q=b` both count as `/search`. Ties broken by path |
 
 **Behavior**
 
@@ -477,7 +477,7 @@ The wave list says where each attack is, so it can be looked up with the samples
 | Redis paused or stopped: ingestion still succeeds within 2 s; the instance stays ready | `RedisUnavailableIT` |
 | Ingest API end to end: single, batch, all-or-nothing, indexed errors, idempotency, future timestamps, normalization | `IngestIT` |
 | Time-range defaults, formats and limits; WHERE clauses with only the supplied filters | `TimeRangeTest`, `SqlFilterTest` |
-| Stats summary: a fixture with exact counts and averages, `configId` filter, default range boundaries, empty range, top-10 cut-off and tie-breaks, unscored rows, invalid parameters, roles | `StatsIT` |
+| Stats summary: a fixture with exact counts and averages, `configId` filter, default range boundaries, empty range, top-10 cut-off and tie-breaks, paths grouped without the query string, unscored rows, invalid parameters, roles | `StatsIT` |
 | Samples: every field and its enrichment, omitted nulls, newest-first order with the `eventId` tie-break, paging and `total`, combined filters, defaults, rejected `limit`/`offset`, enum errors listing allowed values, roles | `SamplesIT` |
 | Stats and samples queries blocked past the timeout, and an exhausted pool, all return a fast 503 (forced with a table lock and held connections, not timing) | `DatabaseBackpressureIT` |
 | Hypertable migration; compression settings; duplicates, new events and stats on a compressed chunk | `MigrationIT`, `CompressionIT` |
