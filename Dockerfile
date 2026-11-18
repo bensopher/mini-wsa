@@ -14,14 +14,14 @@ RUN mvn -B -q -DskipTests package
 
 # The generator image, used by the "seed" compose profile. Defined before the app so that a plain
 # `docker build .` (which builds the last stage) still produces the app.
-FROM eclipse-temurin:21-jre AS generator
+FROM eclipse-temurin:24-jre AS generator
 RUN groupadd --system app && useradd --system --gid app --no-create-home app
 WORKDIR /app
 COPY --from=build /src/mini-wsa-generator/target/mini-wsa-generator-*.jar generator.jar
 USER app
 ENTRYPOINT ["java", "-jar", "/app/generator.jar"]
 
-FROM eclipse-temurin:21-jre AS app
+FROM eclipse-temurin:24-jre AS app
 RUN groupadd --system app && useradd --system --gid app --no-create-home app
 WORKDIR /app
 COPY --from=build /src/mini-wsa-app/target/mini-wsa-app-*.jar app.jar
