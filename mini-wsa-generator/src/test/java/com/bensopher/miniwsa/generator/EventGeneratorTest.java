@@ -23,22 +23,22 @@ class EventGeneratorTest {
 
     @Test
     void theSameSeedGivesExactlyTheSameEvents() {
-        String first = json.writeValueAsString(generator(42).generate(2000, "run1"));
-        String second = json.writeValueAsString(generator(42).generate(2000, "run1"));
+        String first = json.writeValueAsString(generator(42).generate(2000, "run1").events());
+        String second = json.writeValueAsString(generator(42).generate(2000, "run1").events());
 
         assertThat(first).isEqualTo(second);
-        assertThat(json.writeValueAsString(generator(43).generate(2000, "run1"))).isNotEqualTo(first);
+        assertThat(json.writeValueAsString(generator(43).generate(2000, "run1").events())).isNotEqualTo(first);
     }
 
     @Test
     void everyEventPassesTheIngestRules() {
-        assertThat(generator(7).generate(5000, "run1"))
+        assertThat(generator(7).generate(5000, "run1").events())
                 .allSatisfy(event -> assertThat(IngestRules.violations(event)).as(event.toString()).isEmpty());
     }
 
     @Test
     void eventsAreChronologicalWithinTheSpanAndNumberedInOrder() {
-        List<GeneratedEvent> events = generator(7).generate(1000, "ab12cd34");
+        List<GeneratedEvent> events = generator(7).generate(1000, "ab12cd34").events();
 
         assertThat(events).hasSize(1000).isSortedAccordingTo(Comparator.comparing(GeneratedEvent::timestamp));
         assertThat(events).allSatisfy(e -> assertThat(e.timestamp()).isBetween(NOW.minus(Duration.ofHours(1)), NOW));
@@ -49,7 +49,7 @@ class EventGeneratorTest {
 
     @Test
     void backgroundTrafficLooksLikeAnEdgeFeed() {
-        List<GeneratedEvent> events = generator(7).generate(10_000, "run1");
+        List<GeneratedEvent> events = backgroundOnly(7).generate(10_000, "run1").events();
         var byCategory = events.stream().collect(Collectors.groupingBy(e -> e.rule().category(), Collectors.counting()));
         var byClient = events.stream().collect(Collectors.groupingBy(GeneratedEvent::clientIp, Collectors.counting()));
 
@@ -68,7 +68,7 @@ class EventGeneratorTest {
 
     @Test
     void anAddressAlwaysComesFromTheSamePlace() {
-        var placesByClient = generator(7).generate(5000, "run1").stream()
+        var placesByClient = generator(7).generate(5000, "run1").events().stream()
                 .collect(Collectors.groupingBy(GeneratedEvent::clientIp,
                         Collectors.mapping(e -> String.valueOf(e.geoLocation()), Collectors.toSet())));
 
@@ -77,12 +77,41 @@ class EventGeneratorTest {
 
     @Test
     void timestampsSerializeAsIsoStrings() {
-        String first = json.writeValueAsString(generator(1).generate(1, "run1").getFirst());
+        String first = json.writeValueAsString(generator(1).generate(1, "run1").events().getFirst());
 
         assertThat(first).containsPattern("\"timestamp\":\"2026-11-18T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z\"");
     }
 
+    @Test
+    void theWaveRatioSetsHowManyEventsBelongToWaves() {
+        EventGenerator.Run run = generator(7).generate(10_000, "run1");
+
+        assertThat(run.events()).hasSize(10_000);
+        assertThat(run.waves().stream().mapToInt(AttackWaves.Wave::events).sum()).isEqualTo(4000);
+        assertThat(run.waves()).extracting(AttackWaves.Wave::kind).contains(AttackWaves.Kind.values());
+        assertThat(backgroundOnly(7).generate(1000, "run1").waves()).isEmpty();
+    }
+
+    @Test
+    void aDefaultRunContainsABurstFromOneIpToOnePath() {
+        List<GeneratedEvent> events = generator(7).generate(10_000, "run1").events();
+
+        var bursts = events.stream()
+                .filter(e -> e.userAgent().equals(Catalog.SQLMAP) && e.path().startsWith("/api/v1/"))
+                .collect(Collectors.groupingBy(e -> e.clientIp() + " " + e.path()));
+        assertThat(bursts.values()).anySatisfy(burst -> {
+            assertThat(burst).hasSizeGreaterThanOrEqualTo(50);
+            assertThat(Duration.between(burst.getFirst().timestamp(), burst.getLast().timestamp()))
+                    .isLessThanOrEqualTo(Duration.ofMinutes(3));
+        });
+    }
+
+    /** The default wave ratio, 0.4. */
     static EventGenerator generator(long seed) {
-        return new EventGenerator(seed, CLOCK, Duration.ofHours(1), CONFIGS);
+        return new EventGenerator(seed, CLOCK, Duration.ofHours(1), CONFIGS, 0.4);
+    }
+
+    static EventGenerator backgroundOnly(long seed) {
+        return new EventGenerator(seed, CLOCK, Duration.ofHours(1), CONFIGS, 0);
     }
 }

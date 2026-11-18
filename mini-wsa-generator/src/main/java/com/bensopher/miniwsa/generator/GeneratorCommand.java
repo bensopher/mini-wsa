@@ -40,6 +40,10 @@ public class GeneratorCommand implements Callable<Integer> {
             defaultValue = "14227,14228,20001")
     List<Long> configIds;
 
+    @Option(names = "--wave-ratio", description = "Fraction of events that belong to attack waves, 0 to 1 "
+            + "(default: ${DEFAULT-VALUE}).", defaultValue = "0.4")
+    double waveRatio;
+
     @Option(names = "--out", required = true, description = "Directory to write event files to.")
     Path out;
 
@@ -73,9 +77,11 @@ public class GeneratorCommand implements Callable<Integer> {
         String runId = UUID.randomUUID().toString().substring(0, 8);
         console.printf("Run %s, seed %d (pass --seed %d to reproduce the same events)%n", runId, runSeed, runSeed);
 
-        List<GeneratedEvent> events = new EventGenerator(runSeed, clock, span, configIds).generate(count, runId);
-        List<Path> files = new EventFiles(JsonMapper.builder().build()).write(batches(events), out, format);
-        console.printf("Wrote %d events to %d files in %s%n", events.size(), files.size(), out.toAbsolutePath());
+        EventGenerator.Run run = new EventGenerator(runSeed, clock, span, configIds, waveRatio).generate(count, runId);
+        printWaves(run.waves(), console);
+        List<Path> files = new EventFiles(JsonMapper.builder().build()).write(batches(run.events()), out, format);
+        console.printf("Wrote %d events to %d files in %s%n", run.events().size(), files.size(),
+                out.toAbsolutePath());
         return 0;
     }
 
@@ -86,8 +92,21 @@ public class GeneratorCommand implements Callable<Integer> {
         if (batchSize < 1 || batchSize > 1000) {
             throw new ParameterException(spec.commandLine(), "--batch-size must be between 1 and 1000 (the API's limit)");
         }
+        if (waveRatio < 0 || waveRatio > 1) {
+            throw new ParameterException(spec.commandLine(), "--wave-ratio must be between 0 and 1");
+        }
         if (span.isZero() || span.isNegative()) {
             throw new ParameterException(spec.commandLine(), "--span must be positive");
+        }
+    }
+
+    /** Where each attack happened, so its events can be found again through the stats and samples APIs. */
+    private static void printWaves(List<AttackWaves.Wave> waves, PrintWriter console) {
+        console.printf("%d attack waves:%n", waves.size());
+        for (AttackWaves.Wave wave : waves) {
+            String clients = wave.clients().size() == 1 ? wave.clients().getFirst() : wave.clients().size() + " clients";
+            console.printf("  %-19s %4d events  %s -> %s  %s on %s%n", wave.kind(), wave.events(), wave.start(),
+                    wave.end(), clients, wave.path());
         }
     }
 
