@@ -4,7 +4,7 @@ A small security analytics pipeline: a Spring Boot service that ingests web secu
 
 **Stack:** Java 21 (virtual threads) · Spring Boot 4.1 · PostgreSQL 17 + TimescaleDB · Redis · Flyway · JdbcTemplate · Spring Security (API keys) · Testcontainers · Docker Compose.
 
-> **Status: work in progress.** The project is built in milestones (see [Development process](#development-process)). **Available now:** authenticated event ingestion with validation, duplicate detection, enrichment (attack type and threat score, including the Redis-backed repeat-offender rule), storage in a compressed TimescaleDB hypertable, and the stats summary API. Sections marked *coming* are filled in as each milestone lands.
+> **Status: work in progress.** The project is built in milestones (see [Development process](#development-process)). **Available now:** authenticated event ingestion with validation, duplicate detection, enrichment (attack type and threat score, including the Redis-backed repeat-offender rule), storage in a compressed TimescaleDB hypertable, and the stats summary and samples APIs. Sections marked *coming* are filled in as each milestone lands.
 
 ## Quick start
 
@@ -115,7 +115,7 @@ Every endpoint except `/actuator/health` (and its `liveness` and `readiness` pro
 | Key | Env variable | Roles | Can |
 |---|---|---|---|
 | `dev-ingest-key` | `MINIWSA_INGEST_KEY` | `INGEST` | ingest events |
-| `dev-read-key` | `MINIWSA_READ_KEY` | `READ` | read stats (samples and alerts coming) |
+| `dev-read-key` | `MINIWSA_READ_KEY` | `READ` | read stats and samples (alerts coming) |
 | `dev-admin-key` | `MINIWSA_ADMIN_KEY` | `READ`, `ADMIN` | read, define alerts (coming), `/actuator/info`, `/actuator/metrics` |
 
 A missing or unknown key gets `401`; a key without the required role gets `403`.
@@ -327,6 +327,67 @@ Add `configId=14227` to filter by configuration (in PowerShell, keep the URL in 
 }
 ```
 
+### `GET /v1/events/samples`
+
+Role: `READ`. Stored events with their enrichment, newest first.
+
+| Parameter | Default | Rule |
+|---|---|---|
+| `configId` | all configs | integer |
+| `from`, `to` | the last 24 hours | as for the stats summary (A8, A9) |
+| `category` | all | one of the rule categories, case-sensitive |
+| `action` | all | `DENY`, `ALERT` or `MONITOR`, case-sensitive |
+| `limit` | 20 | 1–100 |
+| `offset` | 0 | 0–10,000 |
+
+**Behavior**
+
+- **Order:** `timestamp` descending, then `eventId` descending. The tie-break keeps pages stable: without it, two events with the same timestamp could swap places between requests, so one could appear on two pages or on none.
+- **`total` counts every match**, not just the page. The count and the page are read in one `REPEATABLE READ` transaction, so they agree even while events are being ingested.
+- **Out-of-range `limit` and `offset` are rejected, not clamped**, so a client never silently gets less than it asked for. The offset cap exists because Postgres reads and discards every skipped row; to reach older events, narrow the time range or add filters.
+- **Errors:** range checks (`from`/`to`, `limit`, `offset`) are reported together. A value that isn't even the right type (`limit=ten`, `category=SQLI`) is rejected first, on its own; an unknown category or action lists the allowed values.
+- **Null optional fields are omitted** from items (for example `geoLocation` when the event had none).
+
+```bash
+curl "http://localhost:8080/v1/events/samples?category=INJECTION&from=2026-05-20T00:00:00Z&to=2026-05-21T00:00:00Z" -H "X-API-Key: dev-read-key"
+```
+
+```powershell
+curl.exe "http://localhost:8080/v1/events/samples?category=INJECTION&from=2026-05-20T00:00:00Z&to=2026-05-21T00:00:00Z" -H "X-API-Key: dev-read-key"
+```
+
+```json
+{
+  "total": 1, "limit": 20, "offset": 0,
+  "items": [
+    {
+      "eventId": "evt-00132", "timestamp": "2026-05-20T14:32:10Z", "configId": 14227, "policyId": "pol_web1",
+      "clientIp": "203.0.113.42", "hostname": "www.example.com", "path": "/api/v1/login", "method": "POST",
+      "statusCode": 403, "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      "rule": { "id": "950001", "name": "SQL_INJECTION", "message": "SQL Injection Attack Detected", "severity": "CRITICAL", "category": "INJECTION" },
+      "action": "DENY", "geoLocation": { "country": "CN", "city": "Beijing" },
+      "requestSize": 1024, "responseSize": 256,
+      "attackType": "SQL/Command Injection", "threatScore": 75, "receivedAt": "2026-11-18T13:30:40.080Z"
+    }
+  ]
+}
+```
+
+`category=SQLI`, `400`:
+
+```json
+{
+  "type": "https://github.com/bensopher/mini-wsa/errors/validation",
+  "title": "Validation failed",
+  "status": 400,
+  "detail": "Invalid query parameters",
+  "instance": "/v1/events/samples",
+  "errors": [
+    { "field": "category", "message": "must be one of [INJECTION, XSS, PROTOCOL_VIOLATION, DATA_LEAKAGE, BOT, DOS, RATE_LIMIT]", "rejectedValue": "SQLI" }
+  ]
+}
+```
+
 Swagger UI is coming at `/swagger-ui.html`.
 
 ## Data generator
@@ -349,12 +410,13 @@ Swagger UI is coming at `/swagger-ui.html`.
 | Attack type for every category; every score rule and its boundaries; the sample event's 75 and 90; the cap | `AttackTypeClassifierTest`, `*ScoreRuleTest`, `ThreatScoreCalculatorTest` |
 | Event-time ordering, request order of results, fail-open, one log line per Redis outage | `EnrichmentServiceTest` |
 | Repeat-offender state in Redis: counts 0–5, alignment, out-of-order arrival, retries, same id at two times, window boundaries, isolation per IP, TTL, pruning, script cache loss | `RedisRepeatOffenderTrackerIT` |
-| Enrichment end to end: 6th and 7th events get +15, across requests, out-of-order batches, no inflation from retries | `EnrichmentIT` |
+| Enrichment end to end: 6th and 7th events get +15 (in the ingest response, the table and the samples API), across requests, out-of-order batches, no inflation from retries | `EnrichmentIT` |
 | Redis paused or stopped: ingestion still succeeds within 2 s; the instance stays ready | `RedisUnavailableIT` |
 | Ingest API end to end: single, batch, all-or-nothing, indexed errors, idempotency, future timestamps, normalization | `IngestIT` |
 | Time-range defaults, formats and limits; WHERE clauses with only the supplied filters | `TimeRangeTest`, `SqlFilterTest` |
 | Stats summary: a fixture with exact counts and averages, `configId` filter, default range boundaries, empty range, top-10 cut-off and tie-breaks, unscored rows, invalid parameters, roles | `StatsIT` |
-| A query blocked past the timeout and an exhausted pool both return a fast 503 (forced with a table lock and held connections, not timing) | `DatabaseBackpressureIT` |
+| Samples: every field and its enrichment, omitted nulls, newest-first order with the `eventId` tie-break, paging and `total`, combined filters, defaults, rejected `limit`/`offset`, enum errors listing allowed values, roles | `SamplesIT` |
+| Stats and samples queries blocked past the timeout, and an exhausted pool, all return a fast 503 (forced with a table lock and held connections, not timing) | `DatabaseBackpressureIT` |
 | Hypertable migration; compression settings; duplicates, new events and stats on a compressed chunk | `MigrationIT`, `CompressionIT` |
 
 ## Design decisions and assumptions
@@ -406,7 +468,7 @@ Implemented so far:
 - Keys come only from configuration (environment variables in production). Only their SHA-256 hashes are kept in memory, and a presented key is compared against every key in constant time. Logs identify a client by its key's name, never by the key.
 - 401 and 403 are problem responses, counted in the `miniwsa.security.auth.failures` metric (tag `reason` = `missing` | `invalid` | `forbidden`) and logged with the client IP only.
 - **Input hardening:** a 5 MB body limit enforced before authentication (including chunked bodies), at most 1000 events per request, JSON nesting depth ≤ 20 and strings ≤ 64 KB, strict validation, IP parsing without DNS lookups.
-- **Query-cost protection:** read ranges of at most 90 days, and a 5 s timeout per read query, so one expensive request can't hold a database connection indefinitely.
+- **Query-cost protection:** read ranges of at most 90 days, at most 100 samples per page and an offset of at most 10,000, and a 5 s timeout per read query, so one expensive request can't hold a database connection indefinitely.
 - **Injection safety:** every SQL value is a bind parameter, and filter column names come from an enum, never from the request.
 - **No information leakage:** 500s carry only an error id; stack traces and exception messages never reach clients. The public health endpoint shows each component's status, not its details.
 - CSRF protection is off because there are no cookies or browser sessions; CORS is not enabled because there are no browser clients.
@@ -431,6 +493,8 @@ Implemented so far:
 *Coming:* the full list. So far:
 
 - **A retention policy** (for example, drop chunks older than a year), once it is agreed how long events must be kept. It is left out so that historical data can't silently disappear.
+- **Keyset (cursor) pagination for samples**, continuing from the last `(timestamp, eventId)` seen instead of an offset. Each page then costs the same however deep it is, and the offset cap goes away.
+- **An approximate or capped `total`** for samples at scale: an exact `count(*)` over a large range reads every matching row.
 - **One time budget for the whole stats summary.** Each of its four queries has its own 5 s timeout, so a summary can take up to 20 s in the worst case; a transaction-level deadline would bound the request as a whole.
 
 ## Challenges and how I solved them
