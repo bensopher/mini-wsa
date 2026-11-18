@@ -4,7 +4,7 @@ A small security analytics pipeline: a Spring Boot service that ingests web secu
 
 **Stack:** Java 21 (virtual threads) · Spring Boot 4.1 · PostgreSQL 17 + TimescaleDB · Redis · Flyway · JdbcTemplate · Spring Security (API keys) · Testcontainers · Docker Compose.
 
-> **Status: work in progress.** The project is built in milestones (see [Development process](#development-process)). **Available now:** authenticated event ingestion with validation, duplicate detection, enrichment (attack type and threat score, including the Redis-backed repeat-offender rule) and storage in a TimescaleDB hypertable. Sections marked *coming* are filled in as each milestone lands.
+> **Status: work in progress.** The project is built in milestones (see [Development process](#development-process)). **Available now:** authenticated event ingestion with validation, duplicate detection, enrichment (attack type and threat score, including the Redis-backed repeat-offender rule), storage in a compressed TimescaleDB hypertable, and the stats summary API. Sections marked *coming* are filled in as each milestone lands.
 
 ## Quick start
 
@@ -50,7 +50,11 @@ The database credentials and API keys in `docker-compose.yml` and `application.y
 
 ## Storage choice
 
-*Coming.*
+*Coming:* the full justification and alternatives. Implemented so far:
+
+- **Hypertable** `security_events`, partitioned into daily chunks by event time, so a time-range query only reads the chunks it needs. Primary key `(event_id, event_time)`, plus an index on `(config_id, event_time DESC)` for the common "one config over a time range" filter.
+- **Compression:** chunks older than 7 days are converted to TimescaleDB's compressed columnar format, segmented by `config_id` and ordered by `event_time DESC, event_id`. Late events, retries and stats keep working on compressed chunks (an integration test compresses a chunk and checks all three). `event_id` is in the ordering because it is part of the primary key: each compressed batch keeps its min/max, so the duplicate check for a retried event only decompresses batches that could contain it.
+- **No retention policy**, on purpose: replayed or historical events (such as the May 2026 sample) would silently disappear. See "What I'd improve".
 
 ## Enrichment and threat scoring
 
@@ -99,30 +103,31 @@ State lives in **Redis**: one sorted set per client IP (`miniwsa:ro:<ip>`), memb
 
 **Trade-offs:**
 - **Redis is written before Postgres.** If the database insert then fails, Redis remembers events that were never stored. A client retry is still safe (idempotent), at the cost of slightly inflated counts for events that are never retried. The production fix is a log-based pipeline: Kafka partitioned by client IP feeding a stateful stream processor.
-- **Fail open.** If Redis is down or hanging, ingestion continues: events are scored without the repeat bonus, a `WARN` is logged and the `miniwsa.enrichment.repeat_offender.unavailable` metric is incremented. In security analytics, losing events is worse than under-scoring some for a while. Redis timeouts are 500 ms (Lettuce's default is 60 s), so an outage costs at most about half a second per request; an integration test pauses and stops Redis to prove it.
+- **Fail open.** If Redis is down or hanging, ingestion continues: events are scored without the repeat bonus, and every affected request increments the `miniwsa.enrichment.repeat_offender.unavailable` metric (alert on it). One `WARN` is logged when the outage starts and one `INFO` when Redis is back, rather than a line per request that would flood the logs during an attack. In security analytics, losing events is worse than under-scoring some for a while. Redis timeouts are 500 ms (Lettuce's default is 60 s), so an outage costs at most about half a second per request; an integration test pauses and stops Redis to prove it.
+- **Redis isn't part of readiness.** Since ingestion works without it, the readiness probe checks only the database; otherwise a Redis outage would take every instance out of the load balancer. See [Observability](#observability).
 
 ## API reference
 
 ### Authentication
 
-Every endpoint except `/actuator/health` requires an `X-API-Key` header whose key has the required role. The dev keys (overridable with the environment variables shown) are:
+Every endpoint except `/actuator/health` (and its `liveness` and `readiness` probes) requires an `X-API-Key` header whose key has the required role. The dev keys (overridable with the environment variables shown) are:
 
 | Key | Env variable | Roles | Can |
 |---|---|---|---|
 | `dev-ingest-key` | `MINIWSA_INGEST_KEY` | `INGEST` | ingest events |
-| `dev-read-key` | `MINIWSA_READ_KEY` | `READ` | read stats, samples and alerts (coming) |
+| `dev-read-key` | `MINIWSA_READ_KEY` | `READ` | read stats (samples and alerts coming) |
 | `dev-admin-key` | `MINIWSA_ADMIN_KEY` | `READ`, `ADMIN` | read, define alerts (coming), `/actuator/info`, `/actuator/metrics` |
 
 A missing or unknown key gets `401`; a key without the required role gets `403`.
 
 ### Errors
 
-Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`Content-Type: application/problem+json`) with a stable `type` URI. Validation errors list every problem in an `errors` array:
+Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`Content-Type: application/problem+json`) with a stable `type` URI. Validation errors, in the body or in query parameters, list every problem in an `errors` array:
 
 | Field | Meaning |
 |---|---|
-| `index` | Position in the batch (omitted for a single-object request) |
-| `field` | Dotted path, e.g. `rule.severity` |
+| `index` | Position in the batch (omitted for a single-object request and for query parameters) |
+| `field` | Dotted path, e.g. `rule.severity`, or the query parameter's name |
 | `message` | What is wrong; enum errors list the allowed values |
 | `rejectedValue` | The value received (omitted when absent) |
 
@@ -135,6 +140,7 @@ Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`C
 | 413 | `payload-too-large` | Body over 5 MB, or more than 1000 events |
 | 415 | (Spring default) | `Content-Type` is not `application/json` |
 | 500 | `internal` | Unexpected error; the body only carries an `errorId` that matches the server log |
+| 503 | `service-unavailable` | A read query ran past its 5 s timeout, or no database connection was free within 2 s. Sent with `Retry-After: 5`; nothing was stored, so retrying is safe |
 
 ### `POST /v1/events/ingest`
 
@@ -242,6 +248,85 @@ curl.exe -X POST http://localhost:8080/v1/events/ingest -H "Content-Type: applic
 }
 ```
 
+### `GET /v1/stats/summary`
+
+Role: `READ`. Aggregates over a time range of **event time** (A9).
+
+| Parameter | Default | Rule |
+|---|---|---|
+| `configId` | all configs | integer |
+| `from` | `to` − 24 h | ISO-8601 with an offset, normalized to UTC; must be before `to` |
+| `to` | now | ISO-8601 with an offset; the range is half-open, `[from, to)` (A8) |
+
+The range may be at most 90 days, which bounds how much data one request can scan.
+
+| Field | Content |
+|---|---|
+| `configId` | The filter, or `null` for all configs |
+| `timeRange` | The range actually used, after defaults |
+| `totalEvents` | Events in the range |
+| `byCategory` | Count and average threat score (1 decimal) per category, by count descending. Only categories with events appear: an average over zero events is undefined |
+| `byAction` | Count per action; all three actions always appear, with 0 when absent |
+| `topAttackers` | Top 10 client IPs by count, with their average threat score; ties broken by address |
+| `topTargetedPaths` | Top 10 paths by count; ties broken by path |
+
+**Behavior**
+
+- **Consistent sections.** The four aggregation queries run one after another in a single read-only `REPEATABLE READ` transaction, so every section comes from the same snapshot: the totals agree even while events are being ingested. They aren't run in parallel, which would take four connections per request and lose the shared snapshot.
+- **Deterministic rankings.** Ties are broken by IP address (as addresses, so `10.0.0.9` comes before `10.0.0.10`) and by path.
+- **Query cost is bounded** by the 90-day range limit and a 5 s timeout per query (`503` with `Retry-After` if exceeded).
+
+The sample events are dated 20 May 2026, so pass an explicit range to see them (the default is the last 24 hours):
+
+```bash
+curl "http://localhost:8080/v1/stats/summary?from=2026-05-20T00:00:00Z&to=2026-05-21T00:00:00Z" -H "X-API-Key: dev-read-key"
+```
+
+```powershell
+curl.exe "http://localhost:8080/v1/stats/summary?from=2026-05-20T00:00:00Z&to=2026-05-21T00:00:00Z" -H "X-API-Key: dev-read-key"
+```
+
+After ingesting `single-event.json` and `batch-events.json`:
+
+```json
+{
+  "configId": null,
+  "timeRange": { "from": "2026-05-20T00:00:00Z", "to": "2026-05-21T00:00:00Z" },
+  "totalEvents": 3,
+  "byCategory": {
+    "BOT": { "count": 1, "avgThreatScore": 20.0 },
+    "INJECTION": { "count": 1, "avgThreatScore": 75.0 },
+    "XSS": { "count": 1, "avgThreatScore": 40.0 }
+  },
+  "byAction": { "DENY": 1, "ALERT": 1, "MONITOR": 1 },
+  "topAttackers": [
+    { "clientIp": "198.51.100.7", "count": 1, "avgThreatScore": 20.0 },
+    { "clientIp": "203.0.113.42", "count": 1, "avgThreatScore": 75.0 },
+    { "clientIp": "2001:db8::1", "count": 1, "avgThreatScore": 40.0 }
+  ],
+  "topTargetedPaths": [
+    { "path": "/api/v1/login", "count": 1 },
+    { "path": "/checkout", "count": 1 },
+    { "path": "/search", "count": 1 }
+  ]
+}
+```
+
+Add `configId=14227` to filter by configuration (in PowerShell, keep the URL in quotes because of the `&`). `from` after `to`, `400`:
+
+```json
+{
+  "type": "https://github.com/bensopher/mini-wsa/errors/validation",
+  "title": "Validation failed",
+  "status": 400,
+  "detail": "Invalid query parameters",
+  "instance": "/v1/stats/summary",
+  "errors": [
+    { "field": "from", "message": "must be before 'to'", "rejectedValue": "2026-05-21T00:00:00Z" }
+  ]
+}
+```
+
 Swagger UI is coming at `/swagger-ui.html`.
 
 ## Data generator
@@ -257,17 +342,20 @@ Swagger UI is coming at `/swagger-ui.html`.
 | Field validation (every required field, enums, timestamps, IPv4/IPv6, lengths, ranges) | `EventPayloadValidationTest` |
 | Strict JSON typing, nesting and string limits | `JsonConfigTest`, `IngestIT` |
 | Body-size limit (declared and chunked bodies) | `RequestBodyLimitFilterTest`, `RequestBodyLimitIT` |
-| Problem responses; no leaking of exception text | `GlobalExceptionHandlerTest` |
-| API keys, roles, 401/403, public health, error dispatch | `ApiKeyAuthenticatorTest`, `SecurityIT` |
+| Problem responses; no leaking of exception text; 503 + `Retry-After` for query timeouts and pool exhaustion | `GlobalExceptionHandlerTest` |
+| API keys, roles, 401/403, public health and probes, error dispatch | `ApiKeyAuthenticatorTest`, `SecurityIT` |
 | Multi-row insert, duplicate detection, chunking | `JdbcEventWriteRepositoryIT` |
 | The same event from 8 concurrent requests is stored exactly once | `ConcurrentIngestIT` |
 | Attack type for every category; every score rule and its boundaries; the sample event's 75 and 90; the cap | `AttackTypeClassifierTest`, `*ScoreRuleTest`, `ThreatScoreCalculatorTest` |
-| Event-time ordering, request order of results, fail-open | `EnrichmentServiceTest` |
+| Event-time ordering, request order of results, fail-open, one log line per Redis outage | `EnrichmentServiceTest` |
 | Repeat-offender state in Redis: counts 0–5, alignment, out-of-order arrival, retries, same id at two times, window boundaries, isolation per IP, TTL, pruning, script cache loss | `RedisRepeatOffenderTrackerIT` |
 | Enrichment end to end: 6th and 7th events get +15, across requests, out-of-order batches, no inflation from retries | `EnrichmentIT` |
-| Redis paused or stopped: ingestion still succeeds within 2 s | `RedisUnavailableIT` |
+| Redis paused or stopped: ingestion still succeeds within 2 s; the instance stays ready | `RedisUnavailableIT` |
 | Ingest API end to end: single, batch, all-or-nothing, indexed errors, idempotency, future timestamps, normalization | `IngestIT` |
-| Hypertable migration | `MigrationIT` |
+| Time-range defaults, formats and limits; WHERE clauses with only the supplied filters | `TimeRangeTest`, `SqlFilterTest` |
+| Stats summary: a fixture with exact counts and averages, `configId` filter, default range boundaries, empty range, top-10 cut-off and tie-breaks, unscored rows, invalid parameters, roles | `StatsIT` |
+| A query blocked past the timeout and an exhausted pool both return a fast 503 (forced with a table lock and held connections, not timing) | `DatabaseBackpressureIT` |
+| Hypertable migration; compression settings; duplicates, new events and stats on a compressed chunk | `MigrationIT`, `CompressionIT` |
 
 ## Design decisions and assumptions
 
@@ -293,10 +381,22 @@ Other decisions so far:
 - **Duplicate detection uses `INSERT … ON CONFLICT DO NOTHING RETURNING event_id, event_time`** (one multi-row statement per 500 events, one transaction per request). `RETURNING` names exactly the rows that were written; `batchUpdate` with pgjdbc's batch rewriting reports every row as `SUCCESS_NO_INFO` and can't tell duplicates apart.
 - **The unique key is `(event_id, event_time)`** because a TimescaleDB hypertable's unique keys must include its partition column.
 - **Strict JSON typing**: strings are never coerced to numbers and floats never to integers, so malformed producer output is reported instead of silently "fixed".
+- **Read queries build their WHERE clause from only the filters supplied**, never `(:configId IS NULL OR config_id = :configId)`: Postgres plans that pattern once for both cases, so it can't use the `(config_id, event_time)` index. Column names come from an enum, values are always bind parameters.
 
 ## Observability
 
-*Coming:* the full metrics list. Available now: `/actuator/health` (public; shows `db` and `redis` status), and for the `ADMIN` key `/actuator/info` and `/actuator/metrics`, including `miniwsa.security.auth.failures` and `miniwsa.enrichment.repeat_offender.unavailable`. Each ingest request logs one line with counts and duration; payloads are never logged, because events are attacker-controlled and may contain sensitive data. In Docker, logs are structured JSON (ECS).
+*Coming:* the full metrics list. Available now:
+
+| Endpoint | Access | Shows |
+|---|---|---|
+| `/actuator/health` | public | Overall status and each component's status (`db`, `redis`, ...), without details |
+| `/actuator/health/liveness` | public | Whether the process is alive |
+| `/actuator/health/readiness` | public | Whether the instance should get traffic: the database only. Redis is left out on purpose, because ingestion fails open without it |
+| `/actuator/info`, `/actuator/metrics` | `ADMIN` | Including `miniwsa.security.auth.failures` and `miniwsa.enrichment.repeat_offender.unavailable` |
+
+Point an orchestrator's probes at `liveness` and `readiness`, not at `/actuator/health`: the overall status goes `DOWN` with Redis, which would remove every instance from the load balancer during a Redis outage.
+
+Each ingest request logs one line with counts and duration; payloads are never logged, because events are attacker-controlled and may contain sensitive data. A Redis outage is logged once when it starts and once when it ends. In Docker, logs are structured JSON (ECS).
 
 ## Security
 
@@ -306,6 +406,8 @@ Implemented so far:
 - Keys come only from configuration (environment variables in production). Only their SHA-256 hashes are kept in memory, and a presented key is compared against every key in constant time. Logs identify a client by its key's name, never by the key.
 - 401 and 403 are problem responses, counted in the `miniwsa.security.auth.failures` metric (tag `reason` = `missing` | `invalid` | `forbidden`) and logged with the client IP only.
 - **Input hardening:** a 5 MB body limit enforced before authentication (including chunked bodies), at most 1000 events per request, JSON nesting depth ≤ 20 and strings ≤ 64 KB, strict validation, IP parsing without DNS lookups.
+- **Query-cost protection:** read ranges of at most 90 days, and a 5 s timeout per read query, so one expensive request can't hold a database connection indefinitely.
+- **Injection safety:** every SQL value is a bind parameter, and filter column names come from an enum, never from the request.
 - **No information leakage:** 500s carry only an error id; stack traces and exception messages never reach clients. The public health endpoint shows each component's status, not its details.
 - CSRF protection is off because there are no cookies or browser sessions; CORS is not enabled because there are no browser clients.
 - The container runs as a non-root user; image tags are pinned; Dependabot watches Maven and Docker dependencies.
@@ -314,7 +416,11 @@ Implemented so far:
 
 ## Performance and concurrency
 
-*Coming.*
+*Coming:* measured numbers. The model so far:
+
+- **Virtual threads** for every request, with concurrency bounded at the resources: a pool of 10 database connections. Waiting is cheap on a virtual thread, but the database isn't faster for it, so the pool is the real throttle.
+- **Backpressure instead of queueing.** A request that can't get a connection within 2 s gets `503` with `Retry-After`, as does a read query past its 5 s timeout. Load sheds quickly instead of building an ever-growing queue, and clients retry with backoff. Ingestion is idempotent, so the retry is safe.
+- **Stats queries run sequentially in one snapshot**, not in parallel (see the stats endpoint).
 
 ## Design patterns
 
@@ -322,7 +428,10 @@ Implemented so far:
 
 ## What I'd improve with more time
 
-*Coming.*
+*Coming:* the full list. So far:
+
+- **A retention policy** (for example, drop chunks older than a year), once it is agreed how long events must be kept. It is left out so that historical data can't silently disappear.
+- **One time budget for the whole stats summary.** Each of its four queries has its own 5 s timeout, so a summary can take up to 20 s in the worst case; a transaction-level deadline would bound the request as a whole.
 
 ## Challenges and how I solved them
 
