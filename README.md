@@ -1,10 +1,10 @@
 # Mini WSA
 
-A small security analytics pipeline: a Spring Boot service that ingests web security events, enriches them with an attack type and a threat score (including a Redis-backed repeat-offender rule), stores them in PostgreSQL + TimescaleDB, and serves statistics, samples, time series, rate-limited reads and alerting over a REST API.
+A small security analytics pipeline: a Spring Boot service that ingests web security events, enriches them with an attack type and a threat score (including a Redis-backed repeat-offender rule), stores them in PostgreSQL + TimescaleDB, and serves statistics and paginated samples over a REST API. A separate generator simulates realistic traffic with attack waves.
 
-**Stack:** Java 21 (virtual threads) · Spring Boot 4.1 · PostgreSQL 17 + TimescaleDB · Redis · Flyway · JdbcTemplate · Spring Security (API keys) · Testcontainers · Docker Compose.
+**Stack:** Java 21 (virtual threads) · Spring Boot 4.1 · PostgreSQL 17 + TimescaleDB · Redis · Flyway · JdbcTemplate · Spring Security (API keys) · springdoc (OpenAPI) · Testcontainers · Docker Compose.
 
-> **Status: work in progress.** The project is built in milestones (see [Development process](#development-process)). **Available now:** authenticated event ingestion with validation, duplicate detection, enrichment (attack type and threat score, including the Redis-backed repeat-offender rule), storage in a compressed TimescaleDB hypertable, the stats summary and samples APIs, and a data generator that simulates attack waves. Sections marked *coming* are filled in as each milestone lands.
+> **Status:** every core requirement is complete as of `v1.0.0`. The bonus features (time series, rate limiting, alerting) are built on top of it in later tags; see [Development process](#development-process).
 
 ## Quick start
 
@@ -47,15 +47,92 @@ The database credentials and API keys in `docker-compose.yml` and `application.y
 
 ## Architecture
 
-*Coming.*
+```mermaid
+flowchart LR
+    edge["Edge servers / generator"] -->|"POST /v1/events/ingest"| filters
+    dash["Dashboards / analysts"] -->|"GET /v1/stats, /v1/events/samples"| filters
+    subgraph app ["mini-wsa-app"]
+        filters["Body limit (5 MB)<br/>API key + role"] --> ingest["Ingest<br/>parse + validate, all-or-nothing"]
+        ingest --> enrich["Enrichment<br/>classifier + score rules"]
+        enrich --> writer["Multi-row INSERT<br/>ON CONFLICT DO NOTHING RETURNING"]
+        filters --> reads["Stats / Samples<br/>one snapshot per request"]
+    end
+    enrich <-->|"Lua script per IP, pipelined"| redis[("Redis<br/>repeat-offender windows")]
+    writer --> db[("TimescaleDB<br/>security_events hypertable")]
+    reads --> db
+```
+
+One ingest request:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant F as Filters
+    participant I as IngestService
+    participant E as EnrichmentService
+    participant R as Redis
+    participant D as TimescaleDB
+    C->>F: POST /v1/events/ingest (X-API-Key)
+    F->>F: body ≤ 5 MB, key has role INGEST
+    F->>I: one event or an array
+    I->>I: validate every element (any error → 400, nothing stored)
+    I->>I: one receivedAt, drop repeats within the request
+    I->>E: events
+    E->>R: one EVALSHA per client IP, all in one pipeline
+    R-->>E: prior events per event (Redis down → fail open, 0)
+    E-->>I: attack type + threat score per event
+    I->>D: INSERT … ON CONFLICT DO NOTHING RETURNING (one transaction)
+    D-->>I: keys actually inserted
+    I-->>C: 201 received / stored / duplicates, per-event results
+```
+
+**Code layout** (`com.bensopher.miniwsa`, package by feature):
+
+| Package | Contains |
+|---|---|
+| `event` | Domain records and enums shared by every feature (`SecurityEvent`, `Severity`, `Category`, `Action`, ...) |
+| `common` | Cross-cutting pieces: error handling (RFC 9457), JSON hardening, body-size filter, `TimeRange`, `SqlFilter`, read-query timeout, OpenAPI |
+| `security` | API-key authentication and the role rules |
+| `ingest` | `POST /v1/events/ingest`: parsing, validation, duplicate detection, the write repository |
+| `enrichment` | Attack-type classifier, score rules and calculator, Redis repeat-offender tracker |
+| `stats` | `GET /v1/stats/summary` |
+| `samples` | `GET /v1/events/samples` |
+| `mini-wsa-generator` (module) | The traffic generator: a separate CLI that only talks to the HTTP API |
+
+Repository classes are the only code that contains SQL.
 
 ## Storage choice
 
-*Coming:* the full justification and alternatives. Implemented so far:
+**PostgreSQL 17 with TimescaleDB.** For this scope it is the right fit: one familiar, ACID database that `docker compose` runs as a single service, with rich SQL for the aggregations, unique keys for idempotent ingestion, and read-after-write consistency. TimescaleDB adds the time-series features:
 
 - **Hypertable** `security_events`, partitioned into daily chunks by event time, so a time-range query only reads the chunks it needs. Primary key `(event_id, event_time)`, plus an index on `(config_id, event_time DESC)` for the common "one config over a time range" filter.
 - **Compression:** chunks older than 7 days are converted to TimescaleDB's compressed columnar format, segmented by `config_id` and ordered by `event_time DESC, event_id`. Late events, retries and stats keep working on compressed chunks (an integration test compresses a chunk and checks all three). `event_id` is in the ordering because it is part of the primary key: each compressed batch keeps its min/max, so the duplicate check for a retried event only decompresses batches that could contain it.
 - **No retention policy**, on purpose: replayed or historical events (such as the May 2026 sample) would silently disappear. See "What I'd improve".
+- **Next steps within TimescaleDB:** continuous aggregates (pre-computed per-minute rollups) for dashboards, and `time_bucket_gapfill` for time series.
+
+**Honest limits.** It is still a single-node row store at heart. High-cardinality `GROUP BY client_ip` over billions of rows, or ingestion beyond roughly 100k events/s on one node, will not hold up at WSA scale.
+
+**At Akamai scale** the design would change shape (A10):
+
+```mermaid
+flowchart LR
+    edge["Edge fleet"] --> kafka[("Kafka<br/>partitioned by clientIp")]
+    kafka --> stream["Stream enrichment<br/>(Flink / Kafka Streams)<br/>per-IP state for repeat offenders"]
+    stream --> olap[("Columnar OLAP<br/>ClickHouse / Druid / Pinot")]
+    olap --> rollups["Rollups for dashboards"]
+    api["Query API"] --> olap
+```
+
+Partitioning by client IP sends every event from one IP to one consumer, so the repeat-offender window becomes local state with exactly-once checkpoints instead of a Redis round trip, and Kafka is the durable buffer that lets ingestion acknowledge before enrichment. Because SQL lives only in the repository classes, swapping the store doesn't touch the API or the enrichment logic.
+
+**Alternatives considered** (for this assignment):
+
+| Store | Why not here |
+|---|---|
+| ClickHouse | Excellent for aggregations at billions of rows and the likely target at scale, but no enforced unique key (duplicates are merged eventually, not rejected at insert), so idempotent ingestion with exact `stored`/`duplicates` counts would need extra machinery |
+| Elasticsearch / OpenSearch | Strong for searching paths and user agents, but aggregations on high-cardinality fields are approximate, there is no unique constraint for idempotency, and it is a heavier cluster to run |
+| Druid / Pinot | Built for real-time OLAP from Kafka, exactly the at-scale design, but several services to operate for a single-node assignment |
+| Cassandra | Scales writes linearly, but has no ad-hoc `GROUP BY`: every stats query would need its own precomputed table |
 
 ## Enrichment and threat scoring
 
@@ -111,13 +188,15 @@ State lives in **Redis**: one sorted set per client IP (`miniwsa:ro:<ip>`), memb
 
 ### Authentication
 
-Every endpoint except `/actuator/health` (and its `liveness` and `readiness` probes) requires an `X-API-Key` header whose key has the required role. The dev keys (overridable with the environment variables shown) are:
+**Swagger UI:** <http://localhost:8080/swagger-ui.html> (OpenAPI document at `/v3/api-docs`). Click **Authorize**, enter a dev key, and every request from the UI sends it.
+
+Every endpoint except `/actuator/health` (and its `liveness` and `readiness` probes) and the Swagger pages requires an `X-API-Key` header whose key has the required role. The dev keys (overridable with the environment variables shown) are:
 
 | Key | Env variable | Roles | Can |
 |---|---|---|---|
 | `dev-ingest-key` | `MINIWSA_INGEST_KEY` | `INGEST` | ingest events |
-| `dev-read-key` | `MINIWSA_READ_KEY` | `READ` | read stats and samples (alerts coming) |
-| `dev-admin-key` | `MINIWSA_ADMIN_KEY` | `READ`, `ADMIN` | read, define alerts (coming), `/actuator/info`, `/actuator/metrics` |
+| `dev-read-key` | `MINIWSA_READ_KEY` | `READ` | read stats and samples |
+| `dev-admin-key` | `MINIWSA_ADMIN_KEY` | `READ`, `ADMIN` | read, `/actuator/info`, `/actuator/metrics` |
 
 A missing or unknown key gets `401`; a key without the required role gets `403`.
 
@@ -389,7 +468,7 @@ curl.exe "http://localhost:8080/v1/events/samples?category=INJECTION&from=2026-0
 }
 ```
 
-Swagger UI is coming at `/swagger-ui.html`.
+Every endpoint, with parameters, schemas and examples, is also in [Swagger UI](http://localhost:8080/swagger-ui.html).
 
 ## Data generator
 
@@ -499,10 +578,10 @@ These assumptions were sent to the interviewer for confirmation. Code that depen
 | A7 | Path rule | Case-insensitive substring match on `/admin` or `/login` |
 | A8 | `from`/`to` on stats and samples | Optional; default `to = now`, `from = to − 24h`; half-open `[from, to)`; `from >= to` is rejected |
 | A9 | Which time field filters use | The event `timestamp`, not `receivedAt` |
-| A10 | Scale and infrastructure | Minimal runtime (app + Postgres/Timescale + Redis); the production-scale design (Kafka keyed by IP, an OLAP store) will be described under Storage choice |
+| A10 | Scale and infrastructure | Minimal runtime (app + Postgres/Timescale + Redis); the production-scale design (Kafka keyed by IP, an OLAP store) is described under [Storage choice](#storage-choice) |
 | A11 | Generator language | Java, as a separate module |
 
-Other decisions so far:
+Other decisions:
 
 - **Enum-like columns are `TEXT` without CHECK constraints.** The application validates them, and adding a category must not require a migration.
 - **Duplicate detection uses `INSERT … ON CONFLICT DO NOTHING RETURNING event_id, event_time`** (one multi-row statement per 500 events, one transaction per request). `RETURNING` names exactly the rows that were written; `batchUpdate` with pgjdbc's batch rewriting reports every row as `SUCCESS_NO_INFO` and can't tell duplicates apart.
@@ -512,16 +591,29 @@ Other decisions so far:
 
 ## Observability
 
-*Coming:* the full metrics list. Available now:
-
 | Endpoint | Access | Shows |
 |---|---|---|
 | `/actuator/health` | public | Overall status and each component's status (`db`, `redis`, ...), without details |
 | `/actuator/health/liveness` | public | Whether the process is alive |
 | `/actuator/health/readiness` | public | Whether the instance should get traffic: the database only. Redis is left out on purpose, because ingestion fails open without it |
-| `/actuator/info`, `/actuator/metrics` | `ADMIN` | Including `miniwsa.security.auth.failures` and `miniwsa.enrichment.repeat_offender.unavailable` |
+| `/actuator/info`, `/actuator/metrics` | `ADMIN` | Build info and every metric below, e.g. `/actuator/metrics/miniwsa.ingest.rejected` |
 
 Point an orchestrator's probes at `liveness` and `readiness`, not at `/actuator/health`: the overall status goes `DOWN` with Redis, which would remove every instance from the load balancer during a Redis outage.
+
+**Custom metrics:**
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `miniwsa.events.ingested` (tag `category`) | counter | Events stored |
+| `miniwsa.events.duplicates` | counter | Events skipped because they were already stored |
+| `miniwsa.ingest.rejected` (tag `reason` = `validation` \| `malformed` \| `too_large`) | counter | Rejected ingest requests (bad query parameters on read endpoints aren't counted) |
+| `miniwsa.ingest.batch.size` | summary | Events per ingest request |
+| `miniwsa.events.threat_score` | summary | Scores of stored events |
+| `miniwsa.ingest.duration`, `miniwsa.stats.duration`, `miniwsa.samples.duration` | timer | Service time per request (`@Timed`) |
+| `miniwsa.enrichment.repeat_offender.unavailable` | counter | Requests scored without Redis (fail-open); alert on any increase |
+| `miniwsa.security.auth.failures` (tag `reason` = `missing` \| `invalid` \| `forbidden`) | counter | Rejected API keys |
+
+Spring Boot's own metrics are there too, e.g. `http.server.requests` (per URI and status) and the Hikari pool gauges (`hikaricp.connections.active`, `.pending`), which show whether the pool is the bottleneck.
 
 Each ingest request logs one line with counts and duration; payloads are never logged, because events are attacker-controlled and may contain sensitive data. A Redis outage is logged once when it starts and once when it ends. In Docker, logs are structured JSON (ECS).
 
