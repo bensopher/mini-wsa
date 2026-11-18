@@ -30,7 +30,7 @@ class DatabaseBackpressureIT extends AbstractIntegrationTest {
     DataSource dataSource;
 
     @Test
-    void aReadQueryBlockedPastTheTimeoutIsCancelledWith503() throws Exception {
+    void readQueriesBlockedPastTheTimeoutAreCancelledWith503() throws Exception {
         try (Connection locker = dataSource.getConnection()) {
             locker.setAutoCommit(false);
             try (Statement statement = locker.createStatement()) {
@@ -48,7 +48,12 @@ class DatabaseBackpressureIT extends AbstractIntegrationTest {
                     .jsonPath("$.detail")
                     .isEqualTo("The query took too long and was cancelled. Narrow the time range or try again later.");
 
-            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(4));
+            asReader().get().uri("/v1/events/samples").exchange()
+                    .expectStatus().isEqualTo(503)
+                    .expectHeader().valueEquals("Retry-After", "5");
+
+            // Two requests, each cancelled after the 1s timeout.
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(5));
             locker.rollback();
         }
     }

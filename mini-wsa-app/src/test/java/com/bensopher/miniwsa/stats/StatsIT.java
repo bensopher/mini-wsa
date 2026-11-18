@@ -94,10 +94,10 @@ class StatsIT extends AbstractIntegrationTest {
     @Test
     void defaultRangeIsTheLast24HoursHalfOpen() {
         Instant dayAgo = NOW.minus(1, ChronoUnit.DAYS);
-        insert("at-start", dayAgo, 1, "192.0.2.1", "/", "BOT", "MONITOR", 10);
-        insert("before-start", dayAgo.minus(1, ChronoUnit.MICROS), 1, "192.0.2.1", "/", "BOT", "MONITOR", 10);
-        insert("just-before-now", NOW.minus(1, ChronoUnit.MICROS), 1, "192.0.2.1", "/", "BOT", "MONITOR", 10);
-        insert("at-now", NOW, 1, "192.0.2.1", "/", "BOT", "MONITOR", 10);
+        insertEvent("at-start", dayAgo, 1, "192.0.2.1", "/", "BOT", "MONITOR", 10);
+        insertEvent("before-start", dayAgo.minus(1, ChronoUnit.MICROS), 1, "192.0.2.1", "/", "BOT", "MONITOR", 10);
+        insertEvent("just-before-now", NOW.minus(1, ChronoUnit.MICROS), 1, "192.0.2.1", "/", "BOT", "MONITOR", 10);
+        insertEvent("at-now", NOW, 1, "192.0.2.1", "/", "BOT", "MONITOR", 10);
 
         asReader().get().uri("/v1/stats/summary").exchange()
                 .expectStatus().isOk()
@@ -128,9 +128,9 @@ class StatsIT extends AbstractIntegrationTest {
     void topListsStopAtTenAndBreakTiesByAddressAndPath() {
         Instant t = Instant.parse("2026-05-20T12:00:00Z");
         for (int i = 1; i <= 12; i++) {
-            insert("e" + i, t.plusSeconds(i), 1, "10.0.0." + i, "/p%02d".formatted(i), "BOT", "MONITOR", 10);
+            insertEvent("e" + i, t.plusSeconds(i), 1, "10.0.0." + i, "/p%02d".formatted(i), "BOT", "MONITOR", 10);
         }
-        insert("e12-again", t, 1, "10.0.0.12", "/p12", "BOT", "MONITOR", 10);
+        insertEvent("e12-again", t, 1, "10.0.0.12", "/p12", "BOT", "MONITOR", 10);
 
         // Sorted as text, 10.0.0.10 and 10.0.0.11 would come before 10.0.0.2; as addresses they come after 10.0.0.9.
         asReader().get().uri("/v1/stats/summary?" + MAY_20).exchange()
@@ -146,8 +146,8 @@ class StatsIT extends AbstractIntegrationTest {
     @Test
     void eventsWithoutAScoreCountButDontAffectTheAverage() {
         Instant t = Instant.parse("2026-05-20T12:00:00Z");
-        insert("scored", t, 1, "192.0.2.1", "/", "INJECTION", "DENY", 80);
-        insert("unscored", t.plusSeconds(1), 1, "192.0.2.1", "/", "INJECTION", "DENY", null);
+        insertEvent("scored", t, 1, "192.0.2.1", "/", "INJECTION", "DENY", 80);
+        insertEvent("unscored", t.plusSeconds(1), 1, "192.0.2.1", "/", "INJECTION", "DENY", null);
 
         asReader().get().uri("/v1/stats/summary?" + MAY_20).exchange()
                 .expectStatus().isOk()
@@ -233,29 +233,14 @@ class StatsIT extends AbstractIntegrationTest {
      * just outside the range [May 20, May 21), one on each side.
      */
     private void seedFixture() {
-        insert("e1", "2026-05-20T00:00:00Z", 14227, "203.0.113.42", "/api/v1/login", "INJECTION", "DENY", 75);
-        insert("e2", "2026-05-20T01:00:00Z", 14227, "203.0.113.42", "/api/v1/login", "INJECTION", "DENY", 90);
-        insert("e3", "2026-05-20T02:00:00Z", 14227, "198.51.100.7", "/search", "INJECTION", "ALERT", 40);
-        insert("e4", "2026-05-20T03:00:00Z", 14227, "198.51.100.7", "/search", "XSS", "ALERT", 40);
-        insert("e5", "2026-05-20T04:00:00Z", 14227, "203.0.113.42", "/api/v1/login", "XSS", "DENY", 45);
-        insert("e6", "2026-05-20T23:59:59.999999Z", 14227, "192.0.2.1", "/home", "BOT", "MONITOR", 20);
-        insert("e7", "2026-05-20T12:00:00Z", 99, "203.0.113.42", "/api/v1/login", "INJECTION", "DENY", 10);
-        insert("at-to", "2026-05-21T00:00:00Z", 14227, "203.0.113.42", "/api/v1/login", "INJECTION", "DENY", 75);
-        insert("before-from", "2026-05-19T23:59:59.999999Z", 14227, "192.0.2.1", "/home", "BOT", "MONITOR", 20);
-    }
-
-    private void insert(String eventId, String time, long configId, String ip, String path, String category,
-            String action, Integer score) {
-        insert(eventId, Instant.parse(time), configId, ip, path, category, action, score);
-    }
-
-    /** Rows written directly, so the fixture's scores are exactly what the test says, independent of scoring. */
-    private void insert(String eventId, Instant time, long configId, String ip, String path, String category,
-            String action, Integer score) {
-        jdbc.update("""
-                INSERT INTO security_events (event_id, event_time, received_at, config_id, client_ip, path, method,
-                    rule_id, severity, category, action, attack_type, threat_score)
-                VALUES (?, CAST(? AS timestamptz), now(), ?, CAST(? AS inet), ?, 'GET', '1', 'LOW', ?, ?, 'test', ?)
-                """, eventId, time.toString(), configId, ip, path, category, action, score);
+        insertEvent("e1", "2026-05-20T00:00:00Z", 14227, "203.0.113.42", "/api/v1/login", "INJECTION", "DENY", 75);
+        insertEvent("e2", "2026-05-20T01:00:00Z", 14227, "203.0.113.42", "/api/v1/login", "INJECTION", "DENY", 90);
+        insertEvent("e3", "2026-05-20T02:00:00Z", 14227, "198.51.100.7", "/search", "INJECTION", "ALERT", 40);
+        insertEvent("e4", "2026-05-20T03:00:00Z", 14227, "198.51.100.7", "/search", "XSS", "ALERT", 40);
+        insertEvent("e5", "2026-05-20T04:00:00Z", 14227, "203.0.113.42", "/api/v1/login", "XSS", "DENY", 45);
+        insertEvent("e6", "2026-05-20T23:59:59.999999Z", 14227, "192.0.2.1", "/home", "BOT", "MONITOR", 20);
+        insertEvent("e7", "2026-05-20T12:00:00Z", 99, "203.0.113.42", "/api/v1/login", "INJECTION", "DENY", 10);
+        insertEvent("at-to", "2026-05-21T00:00:00Z", 14227, "203.0.113.42", "/api/v1/login", "INJECTION", "DENY", 75);
+        insertEvent("before-from", "2026-05-19T23:59:59.999999Z", 14227, "192.0.2.1", "/home", "BOT", "MONITOR", 20);
     }
 }

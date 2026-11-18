@@ -101,4 +101,22 @@ public abstract class AbstractIntegrationTest {
     protected RestTestClient withKey(String apiKey) {
         return client.mutate().defaultHeader("X-API-Key", apiKey).build();
     }
+
+    protected void insertEvent(String eventId, String time, long configId, String ip, String path, String category,
+            String action, Integer score) {
+        insertEvent(eventId, Instant.parse(time), configId, ip, path, category, action, score);
+    }
+
+    /**
+     * Writes a row directly, bypassing the API, so a fixture's scores are exactly what the test says, independent
+     * of scoring. Optional columns are left null.
+     */
+    protected void insertEvent(String eventId, Instant time, long configId, String ip, String path, String category,
+            String action, Integer score) {
+        jdbc.update("""
+                INSERT INTO security_events (event_id, event_time, received_at, config_id, client_ip, path, method,
+                    rule_id, severity, category, action, attack_type, threat_score)
+                VALUES (?, CAST(? AS timestamptz), now(), ?, CAST(? AS inet), ?, 'GET', '1', 'LOW', ?, ?, 'test', ?)
+                """, eventId, time.toString(), configId, ip, path, category, action, score);
+    }
 }

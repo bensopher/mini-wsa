@@ -23,6 +23,7 @@ import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import java.net.URI;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 
@@ -119,12 +120,22 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return ResponseEntity.badRequest().body(problem);
     }
 
-    /** A query parameter that can't be converted, such as {@code configId=abc}: a 400 in the validation format. */
+    /**
+     * A query parameter that can't be converted, such as {@code configId=abc} or {@code category=SQLI}: a 400 in
+     * the validation format. Enum errors list the allowed values, as they do for request bodies.
+     */
     @Override
     protected ResponseEntity<Object> handleTypeMismatch(TypeMismatchException ex, HttpHeaders headers,
             HttpStatusCode status, WebRequest request) {
         Class<?> type = ex.getRequiredType();
-        String message = type == Long.class || type == Integer.class ? "must be an integer" : "has an invalid value";
+        String message;
+        if (type != null && type.isEnum()) {
+            message = "must be one of " + Arrays.stream((Enum<?>[]) type.getEnumConstants()).map(Enum::name).toList();
+        } else if (type == Long.class || type == Integer.class) {
+            message = "must be an integer";
+        } else {
+            message = "has an invalid value";
+        }
         RequestValidationException validation = new RequestValidationException("Invalid query parameters",
                 List.of(new FieldViolation(null, ex.getPropertyName(), message, ex.getValue())));
         return ResponseEntity.badRequest()

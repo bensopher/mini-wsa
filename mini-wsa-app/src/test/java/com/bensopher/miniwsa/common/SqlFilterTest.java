@@ -1,5 +1,7 @@
 package com.bensopher.miniwsa.common;
 
+import com.bensopher.miniwsa.event.Action;
+import com.bensopher.miniwsa.event.Category;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -29,6 +31,18 @@ class SqlFilterTest {
         assertThat(filter.where())
                 .isEqualTo("WHERE event_time >= :from AND event_time < :to AND config_id = :config_id");
         assertThat(filter.params().getValue("config_id")).isEqualTo(14227L);
+    }
+
+    @Test
+    void filtersCombineAndEnumsAreBoundByName() {
+        SqlFilter filter = SqlFilter.timeRange(RANGE)
+                .eq(FilterColumn.CATEGORY, Category.INJECTION)
+                .eq(FilterColumn.ACTION, Action.DENY);
+
+        assertThat(filter.where()).isEqualTo(
+                "WHERE event_time >= :from AND event_time < :to AND category = :category AND action = :action");
+        assertThat(filter.params().getValue("category")).isEqualTo("INJECTION");
+        assertThat(filter.params().getValue("action")).isEqualTo("DENY");
     }
 
     @Test

@@ -31,6 +31,8 @@ miniwsa:
   query:
     default-range: 24h   # A8
     max-range: 90d       # bounds how much data one query can scan
+    # A deep offset makes Postgres read and discard every skipped row, so it is capped.
+    samples: { default-limit: 20, max-limit: 100, max-offset: 10000 }
   security:
     # Dev defaults only (documented in the README); real deployments inject keys from a secrets manager via env.
     api-keys:

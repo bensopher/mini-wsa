@@ -1,11 +1,11 @@
 package com.bensopher.miniwsa.stats;
 
 import com.bensopher.miniwsa.common.LimitsProperties;
+import com.bensopher.miniwsa.common.ReadQueries;
 import com.bensopher.miniwsa.common.SqlFilter;
 import com.bensopher.miniwsa.stats.StatsSummary.AttackerStats;
 import com.bensopher.miniwsa.stats.StatsSummary.CategoryStats;
 import com.bensopher.miniwsa.stats.StatsSummary.PathStats;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Isolation;
@@ -28,11 +28,7 @@ public class StatsRepository {
     private final NamedParameterJdbcTemplate jdbc;
 
     public StatsRepository(DataSource dataSource, LimitsProperties limits) {
-        // One expensive query must not hold a pooled connection indefinitely. The driver cancels a statement
-        // that runs past the timeout, and the error handler turns that into a 503.
-        JdbcTemplate template = new JdbcTemplate(dataSource);
-        template.setQueryTimeout((int) limits.readQueryTimeout().toSeconds());
-        this.jdbc = new NamedParameterJdbcTemplate(template);
+        this.jdbc = ReadQueries.template(dataSource, limits);
     }
 
     /** The four sections of a summary, read from one snapshot. */

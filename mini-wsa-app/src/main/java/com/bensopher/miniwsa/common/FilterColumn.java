@@ -5,7 +5,9 @@ package com.bensopher.miniwsa.common;
  * request input, so a filter can't inject SQL.
  */
 public enum FilterColumn {
-    CONFIG_ID("config_id");
+    CONFIG_ID("config_id"),
+    CATEGORY("category"),
+    ACTION("action");
 
     private final String column;
 

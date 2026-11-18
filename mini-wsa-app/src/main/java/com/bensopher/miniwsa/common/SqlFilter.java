@@ -1,7 +1,6 @@
 package com.bensopher.miniwsa.common;
 
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
-import org.springframework.jdbc.core.namedparam.SqlParameterSource;
 
 import java.sql.Types;
 import java.time.ZoneOffset;
@@ -36,12 +35,15 @@ public final class SqlFilter {
         return filter;
     }
 
-    /** Adds {@code column = value}, or nothing when the value is null (the filter wasn't supplied). */
+    /**
+     * Adds {@code column = value}, or nothing when the value is null (the filter wasn't supplied). Enums are
+     * stored as their names.
+     */
     public SqlFilter eq(FilterColumn column, Object value) {
         if (value != null) {
             String param = column.name().toLowerCase();
             predicates.add(column.column() + " = :" + param);
-            params.addValue(param, value);
+            params.addValue(param, value instanceof Enum<?> e ? e.name() : value);
         }
         return this;
     }
@@ -50,7 +52,8 @@ public final class SqlFilter {
         return "WHERE " + String.join(" AND ", predicates);
     }
 
-    public SqlParameterSource params() {
+    /** The filter's parameters. Callers may add their own, such as a page's limit and offset. */
+    public MapSqlParameterSource params() {
         return params;
     }
 }
