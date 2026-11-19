@@ -725,5 +725,5 @@ To reproduce one cell: `docker compose --profile seed run --rm seed --target htt
 ## Development process
 
 - Small commits in [Conventional Commits](https://www.conventionalcommits.org/) format; every commit builds and passes `./mvnw verify`, with tests in the same commit as the code they cover.
-- One annotated tag per milestone: `v0.1-ingestion`, `v0.2-enrichment`, `v0.3-stats`, `v0.4-samples`, `v0.5-generator`, and `v1.0.0` (every core requirement, documented and measured).
+- One annotated tag per milestone: `v0.1-ingestion`, `v0.2-enrichment`, `v0.3-stats`, `v0.4-samples`, `v0.5-generator`, `v1.0.0` (every core requirement, documented and measured), and `v1.0.1` (fixes from a review: malformed input rejected with `400` instead of `500`, and a limit on event age).
 - AI-assisted tooling (Claude Code) was used during development, as the assignment allows. All code was reviewed and is understood by the author.
