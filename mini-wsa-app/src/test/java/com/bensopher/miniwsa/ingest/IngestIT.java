@@ -12,6 +12,7 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.math.BigInteger;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -136,6 +137,29 @@ class IngestIT extends AbstractIntegrationTest {
                             { "index": 0, "field": "configId", "message": "must be an integer", "rejectedValue": "123" },
                             { "index": 1, "field": "configId", "message": "must be an integer", "rejectedValue": 1.5 },
                             { "index": 2, "field": "rule", "message": "must be a JSON object" }
+                          ]
+                        }
+                        """);
+
+        assertThat(count()).isZero();
+    }
+
+    @Test
+    void numbersTooLargeForTheirFieldAreValidationErrors() {
+        ObjectNode hugeConfigId = event("a");
+        hugeConfigId.put("configId", new BigInteger("99999999999999999999"));
+        ObjectNode hugeStatus = event("b").put("statusCode", 3_000_000_000L);
+
+        ingest(batch(hugeConfigId, hugeStatus))
+                .expectStatus().isBadRequest()
+                .expectBody().json("""
+                        {
+                          "detail": "2 of 2 events failed validation; nothing was stored",
+                          "errors": [
+                            { "index": 0, "field": "configId", "message": "is out of range",
+                              "rejectedValue": 99999999999999999999 },
+                            { "index": 1, "field": "statusCode", "message": "is out of range",
+                              "rejectedValue": 3000000000 }
                           ]
                         }
                         """);

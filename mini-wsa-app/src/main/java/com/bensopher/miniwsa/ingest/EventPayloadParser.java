@@ -13,6 +13,7 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
+import tools.jackson.core.exc.InputCoercionException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.exc.MismatchedInputException;
 import tools.jackson.databind.json.JsonMapper;
@@ -74,7 +75,11 @@ class EventPayloadParser {
             // Each element is converted on its own, so a type error in element 7 is reported as index 7.
             payload = mapper.treeToValue(element, EventPayload.class);
         } catch (MismatchedInputException e) {
-            found.add(typeViolation(element, index, e));
+            found.add(typeViolation(element, index, e, expectedType(e.getTargetType())));
+            return null;
+        } catch (InputCoercionException e) {
+            // A number too large for its field, e.g. "configId": 99999999999999999999.
+            found.add(typeViolation(element, index, e, "is out of range"));
             return null;
         }
         validator.validate(payload).stream()
@@ -96,7 +101,7 @@ class EventPayloadParser {
     }
 
     /** The field path and a value Jackson couldn't convert, e.g. {@code "configId": "abc"}. */
-    private FieldViolation typeViolation(JsonNode element, Integer index, MismatchedInputException e) {
+    private FieldViolation typeViolation(JsonNode element, Integer index, JacksonException e, String message) {
         StringBuilder field = new StringBuilder();
         StringBuilder pointer = new StringBuilder();
         for (JacksonException.Reference ref : e.getPath()) {
@@ -110,7 +115,7 @@ class EventPayloadParser {
         }
         JsonNode rejected = element.at(pointer.toString());
         Object rejectedValue = rejected.isValueNode() ? mapper.treeToValue(rejected, Object.class) : null;
-        return new FieldViolation(index, field.toString(), expectedType(e.getTargetType()), rejectedValue);
+        return new FieldViolation(index, field.toString(), message, rejectedValue);
     }
 
     private static String expectedType(Class<?> type) {
