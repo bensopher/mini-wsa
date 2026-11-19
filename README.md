@@ -683,23 +683,6 @@ Implemented so far:
 
 To reproduce one cell: `docker compose --profile seed run --rm seed --target http://app:8080 --wait-for-health --count 100000 --batch-size 1000 --concurrency 8 --seed 42`.
 
-## Design patterns
-
-Used only where they pay off:
-
-| Pattern | Where | Why it's there |
-|---|---|---|
-| Strategy | `ScoreRule` implementations | Each scoring rule is isolated and unit-tested; a new rule is a new class |
-| Composite | `ThreatScoreCalculator` over every `ScoreRule` bean | Spring injects all rules; the calculator only sums and caps |
-| Port / Adapter | `RepeatOffenderTracker` → `RedisRepeatOffenderTracker`; repositories as the only SQL | Infrastructure can change (an in-memory tracker in tests, another store) without touching business logic |
-| Builder | `SqlFilter` | Safe, readable dynamic WHERE clauses with whitelisted columns |
-| Chain of Responsibility | Servlet filters: body limit → API-key authentication → authorization | Each cross-cutting concern is independent and explicitly ordered |
-| Template Method | `AbstractIntegrationTest` | Shared containers, clock, cleanup and per-role clients for every integration test |
-| Value Object | Records for domain types and DTOs | Immutable, so safe to share between virtual threads |
-| Configuration over code | Weights on the enums, thresholds in `miniwsa.*` | Changing a weight, window or threshold is a one-line change |
-
-Deliberately not used: factories or abstract services with a single implementation, an event bus, or CQRS frameworks. Each would add indirection without a payoff at this size.
-
 ## What I'd improve with more time
 
 - **A retention policy** (for example, drop chunks older than a year), once it is agreed how long events must be kept. It is left out so that historical data can't silently disappear.
