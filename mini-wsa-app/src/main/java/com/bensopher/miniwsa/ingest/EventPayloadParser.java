@@ -70,6 +70,7 @@ class EventPayloadParser {
             found.add(new FieldViolation(index, null, "must be a JSON object", null));
             return null;
         }
+        rejectNulCharacters(element, "", index, found);
         EventPayload payload;
         try {
             // Each element is converted on its own, so a type error in element 7 is reported as index 7.
@@ -98,6 +99,21 @@ class EventPayloadParser {
             return null;
         }
         return toEvent(payload, timestamp);
+    }
+
+    /**
+     * Postgres text can't store the NUL character, so an event holding one would fail at insert time, after the
+     * whole batch had been validated and enriched. Every string of the element is checked, at any depth, so a
+     * field added later is covered too.
+     */
+    private static void rejectNulCharacters(JsonNode node, String path, Integer index, List<FieldViolation> found) {
+        if (node.isString() && node.stringValue().indexOf('\u0000') >= 0) {
+            found.add(new FieldViolation(index, path, "must not contain the NUL character (U+0000)",
+                    node.stringValue()));
+        } else if (node.isObject()) {
+            node.properties().forEach(property -> rejectNulCharacters(property.getValue(),
+                    path.isEmpty() ? property.getKey() : path + "." + property.getKey(), index, found));
+        }
     }
 
     /** The field path and a value Jackson couldn't convert, e.g. {@code "configId": "abc"}. */

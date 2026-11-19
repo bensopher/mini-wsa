@@ -247,7 +247,7 @@ Role: `INGEST`. Body: one event object, or a JSON array of up to 1000 events.
 | `geoLocation.city` | no | ≤ 128 |
 | `requestSize`, `responseSize` | no | ≥ 0 |
 
-Unknown fields are ignored, so producers can add fields without breaking ingestion.
+Unknown fields are ignored, so producers can add fields without breaking ingestion. No string anywhere in an event may contain the NUL character (`\u0000`), which Postgres can't store.
 
 **Behavior**
 

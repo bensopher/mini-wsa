@@ -168,6 +168,31 @@ class IngestIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void nulCharactersAreValidationErrorsAndNothingIsRecorded() {
+        ObjectNode nulInPath = event("a").put("path", "/a\u0000b");
+        ObjectNode nulInNestedField = event("b");
+        ((ObjectNode) nulInNestedField.get("rule")).put("message", "x\u0000");
+
+        ingest(batch(nulInPath, nulInNestedField, event("c")))
+                .expectStatus().isBadRequest()
+                .expectBody().json("""
+                        {
+                          "detail": "2 of 3 events failed validation; nothing was stored",
+                          "errors": [
+                            { "index": 0, "field": "path", "message": "must not contain the NUL character (U+0000)",
+                              "rejectedValue": "/a\\u0000b" },
+                            { "index": 1, "field": "rule.message",
+                              "message": "must not contain the NUL character (U+0000)", "rejectedValue": "x\\u0000" }
+                          ]
+                        }
+                        """);
+
+        assertThat(count()).isZero();
+        // Rejected before enrichment, so the repeat-offender state doesn't remember events that were never stored.
+        assertThat(redis.keys("miniwsa:ro:*")).isEmpty();
+    }
+
+    @Test
     void singleObjectErrorsHaveNoIndex() {
         ingest(event("a").put("clientIp", "999.1.1.1"))
                 .expectStatus().isBadRequest()
