@@ -703,7 +703,23 @@ To reproduce one cell: `docker compose --profile seed run --rm seed --target htt
 
 ## Challenges and how I solved them
 
-*Placeholder: written by the author before submission.*
+### The test clock hid a precision bug
+
+- **Problem:** when `to` is omitted, the stats summary echoes the range it used. Against the Docker stack, the echoed end came back at nanosecond precision (`2026-11-18T08:59:50.846646851Z`), the raw system clock. Every test had passed, because the tests' clock is set to an instant with only milliseconds.
+- **How I found it:** by running the README commands against the real stack before documenting them, not just the test suite.
+- **Fix:** the default end is truncated to milliseconds, like `receivedAt`, and a unit test now uses a nanosecond instant. The lesson: test fixtures should include the awkward precision the real clock has.
+
+### Which exception is "pool exhausted"?
+
+- **Problem:** to turn database overload into a `503` with `Retry-After` instead of a generic `500`, I had to know which exception it raises, and it differs by context.
+- **What I did:** rather than guess, I wrote a throwaway test that held all 10 pooled connections and printed the exception chains.
+- **Fix:** inside a `@Transactional` method, pool exhaustion surfaces as `CannotCreateTransactionException` (with Hikari's `SQLTransientConnectionException` as the cause); outside one, as `CannotGetJdbcConnectionException`. A query cancelled by the read timeout arrives as `QueryTimeoutException`. All three map to `503`. `DatabaseBackpressureIT` forces each case deterministically, with a held table lock and held connections rather than timing tricks such as `pg_sleep`.
+
+### "Fail open" with Redis down was really "hang for 60 seconds"
+
+- **Problem:** the repeat-offender rule is designed to fail open: if Redis is unavailable, events are still stored, just without the repeat bonus. But Lettuce's default command timeout is 60 seconds, so with Redis hanging rather than refusing connections, every ingest request would have stalled for a minute before falling back.
+- **Fix:** Redis command and connect timeouts of 500 ms. `RedisUnavailableIT` proves it with its own Redis container: paused (a hanging server), a request completes in about 0.6 s; stopped, in a few milliseconds. Both store the event and increment the `miniwsa.enrichment.repeat_offender.unavailable` metric.
+- **Along the way:** the paused case failed with "Unable to connect", not a command timeout, which showed that Spring Data Redis opens a dedicated connection for every pipeline. That is why connection pooling is on the [improvements list](#what-id-improve-with-more-time).
 
 ## Development process
 
