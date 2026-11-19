@@ -4,7 +4,7 @@ A small security analytics pipeline: a Spring Boot service that ingests web secu
 
 **Stack:** Java 21 (virtual threads) · Spring Boot 4.1 · PostgreSQL 17 + TimescaleDB · Redis · Flyway · JdbcTemplate · Spring Security (API keys) · springdoc (OpenAPI) · Testcontainers · Docker Compose.
 
-> **Status:** every core requirement is complete as of `v1.0.0`. The bonus features (time series, rate limiting, alerting) are built on top of it in later tags; see [Development process](#development-process).
+> **Status:** every core requirement is complete as of `v1.0.0`. The optional bonus features (time series, rate limiting, alerting) are not implemented; how I would build them is under [What I'd improve](#what-id-improve-with-more-time).
 
 ## Quick start
 
@@ -693,6 +693,7 @@ To reproduce one cell: `docker compose --profile seed run --rm seed --target htt
 - **A columnar OLAP store at scale** (ClickHouse, Druid or Pinot), with continuous aggregates or rollups in the meantime, so stats stop scanning raw events.
 - **Redis connection pooling** for the repeat-offender pipeline: each ingest request opens a new connection today, and Redis was the closest component to saturation in the benchmark.
 - **Short-TTL response caching** for dashboards that poll the same summary.
+- **The bonus features:** a time-series endpoint with gap-filled buckets (`time_bucket_gapfill`, later fed by a 1-minute continuous aggregate); a Redis token bucket per client in front of the read endpoints; and alert rules evaluated together in one query, moving to streaming evaluation with notifications and cooldowns at scale.
 - **A per-event score breakdown** (which rules added how much), for explainability.
 - **Partial-success batches** (`207` with per-event results) as an opt-in alternative to all-or-nothing.
 - **Duplicate detection by `eventId` alone**, if producers guarantee globally unique ids; today an id is unique per timestamp, because a hypertable's unique key must include the time column.
@@ -724,5 +725,5 @@ To reproduce one cell: `docker compose --profile seed run --rm seed --target htt
 ## Development process
 
 - Small commits in [Conventional Commits](https://www.conventionalcommits.org/) format; every commit builds and passes `./mvnw verify`, with tests in the same commit as the code they cover.
-- One annotated tag per milestone: `v0.1-ingestion`, `v0.2-enrichment`, `v0.3-stats`, `v0.4-samples`, `v0.5-generator`, and `v1.0.0` (every core requirement, documented and measured). The bonus features follow as `v1.1.0-timeseries`, `v1.2.0-rate-limiting` and `v1.3.0-alerting`.
+- One annotated tag per milestone: `v0.1-ingestion`, `v0.2-enrichment`, `v0.3-stats`, `v0.4-samples`, `v0.5-generator`, and `v1.0.0` (every core requirement, documented and measured).
 - AI-assisted tooling (Claude Code) was used during development, as the assignment allows. All code was reviewed and is understood by the author.
