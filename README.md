@@ -229,7 +229,7 @@ Role: `INGEST`. Body: one event object, or a JSON array of up to 1000 events.
 | Field | Required | Rule |
 |---|---|---|
 | `eventId` | yes | non-blank, ≤ 128 characters |
-| `timestamp` | yes | ISO-8601 with an offset (`Z` or `+02:00`); normalized to UTC; at most 5 minutes in the future |
+| `timestamp` | yes | ISO-8601 with an offset (`Z` or `+02:00`); normalized to UTC; at most 5 minutes in the future and at most 365 days in the past |
 | `configId` | yes | positive integer (a JSON number: `"123"` and `1.5` are rejected) |
 | `policyId` | no | ≤ 128 |
 | `clientIp` | yes | IPv4 or IPv6 literal (no hostnames, no zone IDs); stored in canonical form |
@@ -571,7 +571,7 @@ These assumptions were sent to the interviewer for confirmation. Code that depen
 |---|---|---|
 | A1 | Batch with some invalid events | **All-or-nothing**: any invalid event → `400` with per-index errors, nothing stored |
 | A2 | Required vs optional fields | Required: `eventId, timestamp, configId, clientIp, path, method, rule.id, rule.severity, rule.category, action`; everything else optional |
-| A3 | Timestamp format | ISO-8601 with an offset, normalized to UTC; more than 5 minutes in the future is rejected (configurable) |
+| A3 | Timestamp format | ISO-8601 with an offset, normalized to UTC; more than 5 minutes in the future or more than 365 days in the past is rejected (both configurable) |
 | A4 | Duplicate `eventId` | Idempotent: the same `(eventId, timestamp)` is stored once, reported as a duplicate, and doesn't count twice toward the repeat-offender rule |
 | A5 | "Last 10 minutes" reference | Event time: the window is `[event.timestamp − 10m, event.timestamp]` |
 | A6 | "More than 5 events" | The bonus applies when ≥ 5 *other* events from the same IP fall in the window (6 in total > 5); earlier events in the same batch count |
@@ -624,7 +624,7 @@ Implemented so far:
 - **Stateless API-key authentication** (`X-API-Key`) with roles `INGEST`, `READ` and `ADMIN`. Ingest keys can't read and read keys can't ingest, which limits data poisoning and data exposure from a leaked key.
 - Keys come only from configuration (environment variables in production). Only their SHA-256 hashes are kept in memory, and a presented key is compared against every key in constant time. Logs identify a client by its key's name, never by the key.
 - 401 and 403 are problem responses, counted in the `miniwsa.security.auth.failures` metric (tag `reason` = `missing` | `invalid` | `forbidden`) and logged with the client IP only.
-- **Input hardening:** a 5 MB body limit enforced before authentication (including chunked bodies), at most 1000 events per request, JSON nesting depth ≤ 20 and strings ≤ 64 KB, strict validation, IP parsing without DNS lookups.
+- **Input hardening:** a 5 MB body limit enforced before authentication (including chunked bodies), at most 1000 events per request, JSON nesting depth ≤ 20 and strings ≤ 64 KB, strict validation, IP parsing without DNS lookups. Event timestamps must be within 365 days of the server clock: with no lower bound, one batch spread over 1000 days would create 1000 hypertable chunks.
 - **Query-cost protection:** read ranges of at most 90 days, at most 100 samples per page and an offset of at most 10,000, and a 5 s timeout per read query, so one expensive request can't hold a database connection indefinitely.
 - **Injection safety:** every SQL value is a bind parameter, and filter column names come from an enum, never from the request.
 - **No information leakage:** 500s carry only an error id; stack traces and exception messages never reach clients. The public health endpoint shows each component's status, not its details.
@@ -637,7 +637,7 @@ Implemented so far:
 |---|---|
 | Unauthorized reads of security data | API keys with roles; every endpoint has an explicit rule and anything unlisted is denied |
 | Data poisoning (fake events skewing scores and stats) | A separate `INGEST` role: ingest keys can't read, read keys can't ingest |
-| Resource exhaustion through huge or abusive requests | Body, batch, JSON nesting and string limits; range, page and offset limits; read-query timeout; a bounded connection pool that fails fast with `503` |
+| Resource exhaustion through huge or abusive requests | Body, batch, JSON nesting and string limits; an event-age limit that bounds how many chunks ingestion can create; range, page and offset limits; read-query timeout; a bounded connection pool that fails fast with `503` |
 | Injection (SQL, Lua, logs) | Bind parameters only; filter columns from an enum; Lua receives event data as arguments, never as script text; payloads are never logged |
 | Information leakage | Generic 500s with an error id; no stack traces or exception messages; actuator restricted to `ADMIN` except health, which shows component status only; keys never logged or echoed |
 | Header spoofing | `X-Forwarded-For` is not used: the client IP in logs is the connection's address |

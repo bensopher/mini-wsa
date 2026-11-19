@@ -98,6 +98,14 @@ class EventPayloadParser {
                     "must not be more than " + humanize(skew) + " ahead of the server clock", payload.timestamp()));
             return null;
         }
+        Duration maxAge = properties.maxEventAge();
+        // A3: and from too far in the past. Without a lower bound, one batch spread over 1000 days would create
+        // 1000 hypertable chunks, and a year Postgres can't store (e.g. -5000) would fail the insert.
+        if (timestamp.isBefore(receivedAt.minus(maxAge))) {
+            found.add(new FieldViolation(index, "timestamp",
+                    "must not be more than " + humanize(maxAge) + " behind the server clock", payload.timestamp()));
+            return null;
+        }
         return toEvent(payload, timestamp);
     }
 
@@ -170,6 +178,9 @@ class EventPayloadParser {
     }
 
     private static String humanize(Duration duration) {
+        if (duration.toDays() > 0 && duration.toSeconds() % 86_400 == 0) {
+            return duration.toDays() + " days";
+        }
         return duration.toSecondsPart() == 0 && duration.toMinutes() > 0
                 ? duration.toMinutes() + " minutes"
                 : duration.toSeconds() + " seconds";

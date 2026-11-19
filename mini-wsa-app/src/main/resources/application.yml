@@ -24,6 +24,8 @@ miniwsa:
   ingest:
     max-batch-size: 1000
     max-future-skew: 5m      # A3
+    # A3: bounds how many daily chunks ingestion can create; raise it for a deliberate backfill of older data.
+    max-event-age: 365d
   scoring:
     sensitive-path: { patterns: [/admin, /login], bonus: 15 }   # A7
     # A5/A6: window in event time. Retention = window + allowed lateness; idle IP keys expire after key-ttl.

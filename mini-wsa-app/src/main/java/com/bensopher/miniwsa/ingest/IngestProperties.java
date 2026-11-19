@@ -10,8 +10,10 @@ import java.time.Duration;
 /**
  * @param maxBatchSize  larger batches are rejected with 413
  * @param maxFutureSkew A3: how far ahead of the server clock an event's timestamp may be
+ * @param maxEventAge   A3: how far behind the server clock an event's timestamp may be
  */
 @Validated
 @ConfigurationProperties("miniwsa.ingest")
-public record IngestProperties(@Positive int maxBatchSize, @NotNull Duration maxFutureSkew) {
+public record IngestProperties(@Positive int maxBatchSize, @NotNull Duration maxFutureSkew,
+        @NotNull Duration maxEventAge) {
 }

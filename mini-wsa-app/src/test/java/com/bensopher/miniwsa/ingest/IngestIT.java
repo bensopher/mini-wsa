@@ -308,6 +308,40 @@ class IngestIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void timestampsMoreThan365DaysBehindAreRejected() {
+        String tooOld = NOW.minus(Duration.ofDays(365)).minusMillis(1).toString();
+        String oldest = NOW.minus(Duration.ofDays(365)).toString();
+
+        ingest(event("a").put("timestamp", tooOld))
+                .expectStatus().isBadRequest()
+                .expectBody().json("""
+                        { "errors": [ { "field": "timestamp",
+                                        "message": "must not be more than 365 days behind the server clock" } ] }
+                        """);
+        ingest(event("b").put("timestamp", oldest)).expectStatus().isCreated();
+    }
+
+    /** Years Postgres or epoch milliseconds can't represent are rejected like any other old event, not a 500. */
+    @Test
+    void timestampsOutsideTheStorableRangeAreValidationErrors() {
+        ingest(batch(event("a").put("timestamp", "-5000-01-01T00:00:00Z"),
+                event("b").put("timestamp", "-999999999-01-01T00:00:00Z")))
+                .expectStatus().isBadRequest()
+                .expectBody().json("""
+                        {
+                          "detail": "2 of 2 events failed validation; nothing was stored",
+                          "errors": [
+                            { "index": 0, "field": "timestamp", "rejectedValue": "-5000-01-01T00:00:00Z",
+                              "message": "must not be more than 365 days behind the server clock" },
+                            { "index": 1, "field": "timestamp", "rejectedValue": "-999999999-01-01T00:00:00Z",
+                              "message": "must not be more than 365 days behind the server clock" }
+                          ]
+                        }
+                        """);
+        assertThat(redis.keys("miniwsa:ro:*")).isEmpty();
+    }
+
+    @Test
     void timestampsAreNormalizedToUtcAndIpsToCanonicalForm() {
         ingest(event("a").put("timestamp", "2026-05-20T16:32:10+02:00").put("clientIp", "2001:DB8:0:0:0:0:0:1"))
                 .expectStatus().isCreated();
