@@ -52,12 +52,10 @@ class EventPayloadParser {
         List<FieldViolation> violations = new ArrayList<>();
         for (int i = 0; i < elements.size(); i++) {
             Integer index = batch ? i : null;
-            List<FieldViolation> found = new ArrayList<>();
-            SecurityEvent event = parseOne(elements.get(i), index, receivedAt, found);
-            if (found.isEmpty()) {
-                events.add(event);
+            switch (parseOne(elements.get(i), index, receivedAt)) {
+                case Parsed.Valid(var event) -> events.add(event);
+                case Parsed.Invalid(var found) -> violations.addAll(found);
             }
-            violations.addAll(found);
         }
         if (!violations.isEmpty()) {
             throw new RequestValidationException(detail(violations, elements.size(), batch), violations);
@@ -65,10 +63,20 @@ class EventPayloadParser {
         return events;
     }
 
-    private SecurityEvent parseOne(JsonNode element, Integer index, Instant receivedAt, List<FieldViolation> found) {
+    /** The outcome of one element: an event only when the element has no violations at all. */
+    private sealed interface Parsed {
+        record Valid(SecurityEvent event) implements Parsed {
+        }
+
+        record Invalid(List<FieldViolation> violations) implements Parsed {
+        }
+    }
+
+    private Parsed parseOne(JsonNode element, Integer index, Instant receivedAt) {
+        List<FieldViolation> found = new ArrayList<>();
         if (!element.isObject()) {
             found.add(new FieldViolation(index, null, "must be a JSON object", null));
-            return null;
+            return new Parsed.Invalid(List.copyOf(found));
         }
         rejectNulCharacters(element, "", index, found);
         EventPayload payload;
@@ -77,18 +85,18 @@ class EventPayloadParser {
             payload = mapper.treeToValue(element, EventPayload.class);
         } catch (MismatchedInputException e) {
             found.add(typeViolation(element, index, e, expectedType(e.getTargetType())));
-            return null;
+            return new Parsed.Invalid(List.copyOf(found));
         } catch (InputCoercionException e) {
             // A number too large for its field, e.g. "configId": 99999999999999999999.
             found.add(typeViolation(element, index, e, "is out of range"));
-            return null;
+            return new Parsed.Invalid(List.copyOf(found));
         }
         validator.validate(payload).stream()
                 .sorted(Comparator.comparing(v -> v.getPropertyPath().toString()))
                 .map(v -> new FieldViolation(index, v.getPropertyPath().toString(), v.getMessage(), v.getInvalidValue()))
                 .forEach(found::add);
         if (!found.isEmpty()) {
-            return null;
+            return new Parsed.Invalid(List.copyOf(found));
         }
         Instant timestamp = parseTimestamp(payload.timestamp());
         Duration skew = properties.maxFutureSkew();
@@ -96,7 +104,7 @@ class EventPayloadParser {
         if (timestamp.isAfter(receivedAt.plus(skew))) {
             found.add(new FieldViolation(index, "timestamp",
                     "must not be more than " + humanize(skew) + " ahead of the server clock", payload.timestamp()));
-            return null;
+            return new Parsed.Invalid(List.copyOf(found));
         }
         Duration maxAge = properties.maxEventAge();
         // A3: and from too far in the past. Without a lower bound, one batch spread over 1000 days would create
@@ -104,9 +112,9 @@ class EventPayloadParser {
         if (timestamp.isBefore(receivedAt.minus(maxAge))) {
             found.add(new FieldViolation(index, "timestamp",
                     "must not be more than " + humanize(maxAge) + " behind the server clock", payload.timestamp()));
-            return null;
+            return new Parsed.Invalid(List.copyOf(found));
         }
-        return toEvent(payload, timestamp);
+        return new Parsed.Valid(toEvent(payload, timestamp));
     }
 
     /**
