@@ -1,7 +1,7 @@
 # Multi-stage build. Tests are skipped here because they need Docker (Testcontainers);
 # they run on the host with ./mvnw verify.
 
-FROM maven:3.10-eclipse-temurin-21 AS build
+FROM maven:3-eclipse-temurin-26 AS build
 WORKDIR /src
 # POMs first: the dependency layer is cached until a POM changes.
 COPY pom.xml .
